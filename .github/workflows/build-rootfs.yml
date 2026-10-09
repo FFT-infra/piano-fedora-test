@@ -63,10 +63,8 @@ jobs:
           sudo chown "$(id -u):$(id -g)" "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst"
           ls -lh rootfs-*.tar.zst
 
-      # 上传是可选的：rootfs 约 1.9 GB，账号 artifact 配额可能不够。
-      # 配额不足时不让整个构建失败，构建结果与 manifest 已在上一步输出。
+      # 仓库为 public，artifact 存储与 Actions 分钟数不计费。
       - name: Upload rootfs artifact
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}

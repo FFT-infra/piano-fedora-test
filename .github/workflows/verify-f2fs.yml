@@ -1,0 +1,60 @@
+name: verify-f2fs
+
+# 用小 fixture 验证 F2FS 工具能保留元数据。不接触设备，不产出大镜像。
+#
+# 为什么不用完整 rootfs：完整 Fedora rootfs 约 5 GB，做出的镜像要 GB 级，
+# 走 GitHub 传不动。这里只验证工具本身正确——setuid、xattr、软硬链接能否
+# 往返保留。真正的部署镜像在本地或自托管环境生成。
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  roundtrip:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install f2fs-tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq f2fs-tools attr
+
+      - name: Build fixture rootfs
+        run: |
+          set -euo pipefail
+          mkdir -p fixture/etc fixture/usr/bin fixture/home/user
+          printf 'ID=fedora\nVERSION_ID=44\n' > fixture/etc/os-release
+          printf '#!/bin/sh\necho hello\n' > fixture/usr/bin/hello
+          chmod 4755 fixture/usr/bin/hello
+          ln -sf ../usr/bin/hello fixture/home/user/link
+          setfattr -n user.codex.test -v roundtrip fixture/etc/os-release
+          echo "fixture ready"
+          ls -l fixture/usr/bin/hello fixture/home/user/link
+          getfattr -d fixture/etc/os-release
+
+      - name: Build F2FS image and verify
+        run: |
+          set -euo pipefail
+          sudo python3 scripts/build-f2fs-image.py \
+            --rootfs fixture \
+            --size-mib 64 \
+            --output fixture.f2fs.img \
+            --verify \
+            --manifest f2fs-manifest.json
+
+      - name: Show manifest
+        run: cat f2fs-manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f2fs-manifest
+          path: f2fs-manifest.json
+          retention-days: 7
