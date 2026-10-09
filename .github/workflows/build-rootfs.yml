@@ -48,9 +48,10 @@ jobs:
           set -euo pipefail
           OUT="build/distros/fedora-${{ inputs.releasever }}-${{ inputs.desktop }}"
           test -d "$OUT/rootfs"
-          echo "rootfs size: $(du -sh "$OUT/rootfs" | cut -f1)"
+          # 部分目录由 root 拥有，普通用户 du 会报权限错误并返回非零。
+          sudo du -sh "$OUT/rootfs"
           cat "$OUT/manifest.json"
-          du -sh "$OUT/rootfs"/* | sort -rh | head -10
+          sudo du -sh "$OUT/rootfs"/* | sort -rh | head -10
 
       - name: Package rootfs
         run: |
