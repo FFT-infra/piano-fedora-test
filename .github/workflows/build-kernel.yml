@@ -1,0 +1,115 @@
+name: build-kernel
+
+# 按 sources.lock.json 取 SunUEFI，构建 piano 内核 Image、DTB 与模块。
+#
+# 上游 build.sh linux 会走 prepare_release_kernel + build_piano_full_kernel，
+# 约 2.5 小时。这里只跑内核，不碰 UEFI、Mesa、Sensors 和 rootfs。
+#
+# 不接触设备。
+on:
+  workflow_dispatch:
+    inputs:
+      sunuefi_ref:
+        description: "SunUEFI ref（留空则用 sources.lock.json 的 commit）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    # 原生 arm64：内核交叉编译在 x86 上也能做，但原生更快，且与上游一致。
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned commits
+        id: pins
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          lock = json.load(open("sources.lock.json"))["sources"]
+          print("sunuefi_url=" + lock["sunuefi"]["url"])
+          print("sunuefi_commit=" + lock["sunuefi"]["commit"])
+          print("kernel_url=" + lock["linux-piano"]["url"])
+          print("kernel_commit=" + lock["linux-piano"]["commit"])
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Install kernel build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            clang lld llvm make bison flex bc \
+            libssl-dev libelf-dev cpio zstd xz-utils \
+            python3 python3-venv git rsync ccache device-tree-compiler
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-strip make bison flex bc; do
+            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+
+      - name: Clone SunUEFI at the pinned commit
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.sunuefi_ref }}"
+          [ -n "$REF" ] || REF="${{ steps.pins.outputs.sunuefi_commit }}"
+          git clone --filter=blob:none "${{ steps.pins.outputs.sunuefi_url }}" sunuefi
+          git -C sunuefi checkout "$REF"
+          echo "sunuefi at $(git -C sunuefi rev-parse HEAD)"
+
+      - name: Clone kernel at the pinned commit
+        run: |
+          set -euo pipefail
+          mkdir -p sunuefi/upstream
+          git clone --filter=blob:none "${{ steps.pins.outputs.kernel_url }}" sunuefi/upstream/linux-piano
+          git -C sunuefi/upstream/linux-piano checkout "${{ steps.pins.outputs.kernel_commit }}"
+          echo "kernel at $(git -C sunuefi/upstream/linux-piano rev-parse HEAD)"
+
+      - name: Prepare release kernel
+        working-directory: sunuefi
+        run: python3 tools/prepare_release_kernel.py --refresh
+
+      - name: Build kernel
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          record = json.loads(Path('build/release-7.2.9/source-manifest.json').read_text())
+          subprocess.run([
+              'python3', 'tools/build_piano_full_kernel.py',
+              '--worktree', record['worktree'],
+              '--commit', record['actual_commit'],
+              '--root', 'LABEL=PIANOROOT',
+              '--rebuild',
+              '--build-dir', 'build/kernels/release-7.2.9',
+              '--artifacts', 'artifacts/kernels/release-7.2.9',
+          ], check=True)
+          PY
+
+      - name: Inspect kernel artifacts
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          test -d artifacts/kernels/release-7.2.9
+          ls -lh artifacts/kernels/release-7.2.9
+          cat artifacts/kernels/release-7.2.9/manifest.json 2>/dev/null || true
+
+      - name: Package kernel
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          tar -I 'zstd -10 -T0' -cf "$GITHUB_WORKSPACE/kernel-release-7.2.9.tar.zst" \
+            -C artifacts/kernels/release-7.2.9 .
+          ls -lh "$GITHUB_WORKSPACE"/kernel-release-7.2.9.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-release-7.2.9
+          path: kernel-release-7.2.9.tar.zst
+          retention-days: 14
+          compression-level: 1
