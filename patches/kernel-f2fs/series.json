@@ -24,6 +24,14 @@
         "linux/userspace/piano-debug-bootstrap": "e374307a81e4b4efc31c056cb47a129923cd55265a96214268a3ea14f6d75063"
       },
       "creates": []
+    },
+    {
+      "file": "0003-fedora-root-and-selinux.patch",
+      "summary": "显式选择 F2FS 强制命令行与 Fedora SELinux，保留原有源码和硬件校验",
+      "targets": {
+        "tools/build_piano_full_kernel.py": "c6eb1a3004cb790f664e3f0b3e1819e3bd764f3bfc56ed329efd480007d78e58"
+      },
+      "creates": []
     }
   ]
 }

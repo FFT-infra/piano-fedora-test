@@ -13,8 +13,11 @@
 import argparse
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +171,29 @@ def main(argv=None):
         if not folders:
             raise PatchError(f"no patch series under {PATCHES}")
 
-        results = [apply_folder(sunuefi, folder, args.check) for folder in folders]
+        if args.check:
+            # 后续补丁以先前补丁的输出摘要为输入，逐个 git apply --check
+            # 无法验证这种系列。在隔离副本中真实重放，原 checkout 不变。
+            scratch = Path(os.environ.get("PIANO_TMPDIR", str(Path.home() / "Lab/Bridge/tmp/trash")))
+            scratch.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="patch-check-", dir=scratch) as directory:
+                copy = Path(directory)
+                paths = set()
+                for folder in folders:
+                    for patch in load_series(folder)["patches"]:
+                        verify_declared(patch, folder / patch["file"])
+                        paths.update(patch.get("targets", {}))
+                        paths.update(patch.get("creates", []))
+                for relative in paths:
+                    source = sunuefi / relative
+                    if source.exists() or source.is_symlink():
+                        destination = copy / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, destination, follow_symlinks=False)
+                subprocess.run(["git", "init", "-q", str(copy)], check=True)
+                results = [apply_folder(copy, folder, False) for folder in folders]
+        else:
+            results = [apply_folder(sunuefi, folder, False) for folder in folders]
         print(json.dumps(
             {"status": "CHECKED" if args.check else "APPLIED", "results": results},
             indent=2, ensure_ascii=False,

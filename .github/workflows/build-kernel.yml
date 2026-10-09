@@ -46,7 +46,7 @@ jobs:
           sudo apt-get install -y -qq \
             clang lld llvm make bison flex bc \
             libssl-dev libelf-dev cpio zstd xz-utils \
-            python3 python3-venv git rsync ccache device-tree-compiler
+            python3 python3-venv git rsync ccache device-tree-compiler kmod
           for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-strip make bison flex bc; do
             printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
           done
@@ -79,6 +79,31 @@ jobs:
         working-directory: sunuefi
         run: python3 tools/prepare_release_kernel.py --refresh
 
+      - name: Validate the complete Fedora configuration before compilation
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          record = json.loads(Path('build/release-7.2.9/source-manifest.json').read_text())
+          subprocess.run([
+              'python3', 'tools/build_piano_full_kernel.py',
+              '--worktree', record['worktree'], '--commit', record['actual_commit'],
+              '--root', 'LABEL=PIANOROOT', '--root-fstype', 'f2fs', '--fedora-policy',
+              '--configure-only', '--rebuild',
+              '--build-dir', 'build/kernels/release-7.2.9',
+              '--artifacts', 'artifacts/kernels/release-7.2.9',
+          ], check=True)
+          config = Path('build/kernels/release-7.2.9/.config').read_text().splitlines()
+          for name in ('F2FS_FS', 'F2FS_FS_XATTR', 'F2FS_FS_POSIX_ACL',
+                       'F2FS_FS_SECURITY', 'SECURITY_NETWORK', 'SECURITY_SELINUX'):
+              assert 'CONFIG_' + name + '=y' in config, name
+          assert 'CONFIG_LSM="selinux"' in config
+          assert any('rootfstype=f2fs' in line for line in config if line.startswith('CONFIG_CMDLINE='))
+          print('Fedora F2FS/SELinux configuration verified before the long build')
+          PY
+
       - name: Build kernel
         working-directory: sunuefi
         run: |
@@ -92,6 +117,7 @@ jobs:
               '--worktree', record['worktree'],
               '--commit', record['actual_commit'],
               '--root', 'LABEL=PIANOROOT',
+              '--root-fstype', 'f2fs', '--fedora-policy',
               '--rebuild',
               '--build-dir', 'build/kernels/release-7.2.9',
               '--artifacts', 'artifacts/kernels/release-7.2.9',
@@ -105,6 +131,20 @@ jobs:
           test -d artifacts/kernels/release-7.2.9
           ls -lh artifacts/kernels/release-7.2.9
           cat artifacts/kernels/release-7.2.9/manifest.json 2>/dev/null || true
+
+      - name: Export the matching module build inputs
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          # SDK 用于同一内核的外部模块和 native helper 构建，不重新编一套 ABI。
+          OUT=build/kernels/release-7.2.9
+          test -s "$OUT/Module.symvers"
+          test -s "$OUT/.config"
+          tar -I 'zstd -6 -T0' -cf "$GITHUB_WORKSPACE/kernel-sdk-7.2.9.tar.zst" \
+            -C "$OUT" .config Module.symvers include/config include/generated \
+            arch/arm64/include/generated
+          cp build/release-7.2.9/source-manifest.json "$GITHUB_WORKSPACE/kernel-source-manifest.json"
+          cp artifacts/kernels/release-7.2.9/manifest.json "$GITHUB_WORKSPACE/kernel-sdk-manifest.json"
 
       - name: Package kernel
         working-directory: sunuefi
@@ -120,3 +160,15 @@ jobs:
           path: kernel-release-7.2.9.tar.zst
           retention-days: 14
           compression-level: 1
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-sdk-7.2.9
+          path: |
+            kernel-sdk-7.2.9.tar.zst
+            kernel-source-manifest.json
+            kernel-sdk-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
