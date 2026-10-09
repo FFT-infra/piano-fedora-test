@@ -118,18 +118,35 @@ jobs:
           printf 'MZfake-efi-application' > fixture/BOOTAA64.EFI
           printf 'fake-kernel-image' > fixture/Image
           printf 'fake-dtb' > fixture/piano.dtb
+          printf 'fake-initramfs' > fixture/initramfs
+          printf 'fake-boot-img' > fixture/boot.img
+          # 用固件实际读取的布局：EFI/Piano/stable 下放全部载荷。
+          # mtools 不补中间层，这条路径就是之前失败的地方。
           python3 scripts/build-esp-image.py \
             --size-mib 64 \
             --label SUNUEFI_ESP \
             --file "EFI/BOOT/BOOTAA64.EFI:fixture/BOOTAA64.EFI" \
-            --file "Image:fixture/Image" \
-            --file "piano.dtb:fixture/piano.dtb" \
+            --file "EFI/Piano/stable/Image:fixture/Image" \
+            --file "EFI/Piano/stable/board.dtb:fixture/piano.dtb" \
+            --file "EFI/Piano/stable/initramfs:fixture/initramfs" \
+            --file "EFI/Piano/stable/boot.img:fixture/boot.img" \
             --output esp.img \
             --manifest esp-manifest.json
           cat esp-manifest.json
           # 从镜像里读回，确认文件真的写进去了。
           mdir -i esp.img -/ -b
-          for name in EFI/BOOT/BOOTAA64.EFI Image piano.dtb; do
+          for name in EFI/BOOT/BOOTAA64.EFI EFI/Piano/stable/Image \
+                      EFI/Piano/stable/board.dtb EFI/Piano/stable/initramfs \
+                      EFI/Piano/stable/boot.img; do
             mtype -i esp.img "::/$name" > /dev/null || { echo "::error::$name missing from ESP"; exit 1; }
           done
+          # 固件按这个路径定位，manifest 必须记下来。
+          python3 -c "
+          import json
+          record = json.load(open('esp-manifest.json'))
+          assert record['readback_verified'] is True, 'readback not verified'
+          guests = sorted(entry['guest'] for entry in record['files'])
+          assert 'EFI/Piano/stable/boot.img' in guests, guests
+          print('ESP layout and readback OK:', guests)
+          "
           echo "ESP roundtrip OK"

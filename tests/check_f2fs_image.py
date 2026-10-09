@@ -71,10 +71,13 @@ def main():
         )
 
         # 缺 f2fs-tools：明确报缺哪个工具，而不是含糊失败。
+        # 有工具但非 root：明确报权限，不算通过也不算未知失败。
         result = run("--rootfs", str(rootfs), "--size-mib", "64",
                      "--output", str(tmp / "f.img"))
-        if result.returncode == 2 and "missing tools" in result.stderr:
-            check(True, "")
+        if result.returncode == 2 and (
+            "missing tools" in result.stderr or "needs root" in result.stderr
+        ):
+            pass
         elif result.returncode == 0:
             # 环境里有 f2fs-tools，真实制作成功了。
             check((tmp / "f.img").is_file(), "successful run should create the image")

@@ -45,6 +45,19 @@ def require_tools():
         )
 
 
+def require_mount_privilege():
+    """挂载式导入需要 root。
+
+    mount(8) 在权限不足时只返回 "failed to setup loop device"，看不出原因。
+    这里提前判断并说清楚，避免把权限问题误读成镜像或工具问题。
+    """
+    if os.geteuid() != 0:
+        raise ImageError(
+            "mounting the image needs root; run this tool under sudo "
+            f"(current euid {os.geteuid()})"
+        )
+
+
 def sha256(path):
     value = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -180,6 +193,8 @@ def main(argv=None):
             raise ImageError(f"size must be 64..65536 MiB, got {args.size_mib}")
         if not args.label or len(args.label) > 16:
             raise ImageError(f"label must be 1..16 chars, got {args.label!r}")
+        # 挂载式导入是唯一的写入路径，提前确认权限，不等到 mount 才报含糊错误。
+        require_mount_privilege()
 
         result = {
             "status": "IMAGE_PLANNED",
