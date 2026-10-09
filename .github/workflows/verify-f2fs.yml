@@ -27,6 +27,19 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq f2fs-tools attr
 
+      - name: Check kernel f2fs support
+        run: |
+          set -euo pipefail
+          echo "kernel: $(uname -r)"
+          if sudo modprobe f2fs 2>/dev/null && grep -qw f2fs /proc/filesystems; then
+            echo "f2fs: mountable"
+            echo "F2FS_MOUNTABLE=1" >> "$GITHUB_ENV"
+          else
+            echo "f2fs: kernel lacks support, mount roundtrip will be skipped"
+            echo "F2FS_MOUNTABLE=0" >> "$GITHUB_ENV"
+          fi
+          cat /proc/filesystems | grep -i f2fs || true
+
       - name: Build fixture rootfs
         run: |
           set -euo pipefail
