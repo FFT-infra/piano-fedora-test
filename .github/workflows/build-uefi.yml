@@ -1,0 +1,109 @@
+name: build-uefi
+
+# 按 sources.lock.json 取 SunUEFI，构建 piano 的 UEFI 产品固件。
+#
+# 用 x86_64 runner：SunUEFI 的宿主机工具链是从 Debian amd64 提取的固定包
+# （qemu-user、proot、libtalloc2），arm64 runner 上不适用。
+#
+# 不接触设备。
+on:
+  workflow_dispatch:
+    inputs:
+      sunuefi_ref:
+        description: "SunUEFI ref（留空则用 sources.lock.json 的 commit）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  uefi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned commits
+        id: pins
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          lock = json.load(open("sources.lock.json"))["sources"]
+          print("sunuefi_url=" + lock["sunuefi"]["url"])
+          print("sunuefi_commit=" + lock["sunuefi"]["commit"])
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential nasm iasl uuid-dev python3 python3-venv \
+            python3-pip git wget curl xz-utils zstd \
+            bison flex libssl-dev libelf-dev
+          python3 --version
+
+      - name: Clone SunUEFI at the pinned commit
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.sunuefi_ref }}"
+          [ -n "$REF" ] || REF="${{ steps.pins.outputs.sunuefi_commit }}"
+          git clone "${{ steps.pins.outputs.sunuefi_url }}" sunuefi
+          git -C sunuefi checkout "$REF"
+          echo "sunuefi at $(git -C sunuefi rev-parse HEAD)"
+
+      - name: Prepare Python environment
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements-build.txt
+
+      - name: Fetch pinned host toolchain
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          python3 tools/prepare_distro_host_tools.py
+          ls -l build/host-tools/usr/bin/ 2>/dev/null | head -10
+
+      - name: Fetch upstream sources
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          # SunUEFI 用 git submodule 固定依赖；相对 URL 在浅克隆里可能失效，
+          # 先把 submodule 的 URL 改成绝对地址。
+          git submodule sync --recursive
+          git -c protocol.file.allow=always submodule update --init --depth 1 \
+            upstream/Mu-Silicium upstream/simple-init upstream/dtc 2>&1 | tail -20 || true
+          # 嵌套子模块由项目脚本处理。
+          python3 tools/prepare_sources.py 2>&1 | tail -20
+
+      - name: Build UEFI product firmware
+        working-directory: sunuefi
+        run: bash tools/build_product.sh
+
+      - name: Inspect UEFI artifacts
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          ls -lh artifacts/product/
+          cat artifacts/product/manifest.json 2>/dev/null || true
+
+      - name: Package UEFI artifacts
+        working-directory: sunuefi
+        run: |
+          set -euo pipefail
+          tar -I 'zstd -10 -T0' -cf "$GITHUB_WORKSPACE/uefi-product.tar.zst" \
+            -C artifacts/product .
+          ls -lh "$GITHUB_WORKSPACE"/uefi-product.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uefi-product
+          path: uefi-product.tar.zst
+          retention-days: 14
+          compression-level: 1
