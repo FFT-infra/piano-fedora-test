@@ -2,6 +2,7 @@
 """校验仓库内 Markdown 的相对链接可解析。"""
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +13,10 @@ SKIP = ("http://", "https://", "mailto:", "#")
 
 def main():
     problems = []
-    files = [p for p in ROOT.rglob("*.md") if ".git" not in p.parts]
+    paths = subprocess.check_output([
+        "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.md"
+    ], cwd=ROOT).decode().split("\0")
+    files = [ROOT / name for name in paths if name and (ROOT / name).is_file()]
     for path in files:
         for target in LINK.findall(path.read_text(encoding="utf-8")):
             target = target.strip()
