@@ -9,6 +9,10 @@ uid/gid/mode/mtime 与 xattr。F2FS 没有等价的 debugfs，所以这里换一
 为什么不用 sload -P：上游 f2fs-tools 的 sload 只保留 owner/mode，不枚举
 源树的 xattr/ACL/capability。用它制镜像会静默丢元数据。
 
+fsck.f2fs 的输出说明：f2fs-tools 1.16.0 对刚 mkfs 的干净镜像也会报
+"fixing SIT types" 并写 checkpoint，退出码 0。这是该版本的正常行为，不是
+镜像损坏。核对时看退出码，不把这类修复行当作失败。
+
 用法：
     scripts/build-f2fs-image.py --rootfs DIR --size-mib 8192 --output OUT.img
     scripts/build-f2fs-image.py --rootfs DIR --size-mib 8192 --output OUT.img --verify
@@ -130,8 +134,14 @@ def verify(image, source_root, work):
         if mismatch:
             raise ImageError("xattr mismatch: " + "; ".join(mismatch))
 
+        # 退出码 0 即通过。f2fs-tools 1.16.0 对干净镜像也会打印修复行。
         fsck = capture(["fsck.f2fs", "-f", image])
-        return {"entries": len(left), "xattr_checked": True, "fsck": fsck.decode().strip().splitlines()[-1:]}
+        return {
+            "entries": len(left),
+            "xattr_checked": True,
+            "fsck_exit": 0,
+            "fsck_tail": fsck.decode().strip().splitlines()[-2:],
+        }
     finally:
         run(["umount", mount])
 
