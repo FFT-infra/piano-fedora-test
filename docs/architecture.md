@@ -37,6 +37,8 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 | `build-bundle.yml` | 手动 | 汇总内核、UEFI、rootfs、镜像为部署包 |
 
 仓库为 public，artifact 与 Actions 分钟数不计费。
+
+产物清单与部署包结构见 [部署产物](artifacts.md)。
 3. 首次分区。只读探测本机并生成计划，用模拟 GPT 在主机上验证。
 4. 安装与验收。实际写入，启动验证，双向切换。
 

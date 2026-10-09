@@ -22,6 +22,7 @@ make plan RELEASEVER=44    # 打印 rootfs 构建计划
 | `scripts/` | 构建脚本与发行版配方 |
 | `tests/` | 离线检查 |
 | `docs/architecture.md` | 组件边界与分阶段计划 |
+| `docs/artifacts.md` | 部署需要哪些产物、各自来源 |
 
 改动前先读 [AGENTS.md](AGENTS.md)。
 
