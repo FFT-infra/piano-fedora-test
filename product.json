@@ -8,7 +8,7 @@
   },
   "target": {
     "distro": "fedora",
-    "releasever": null,
+    "releasever": "44",
     "desktop": "gnome",
     "arch": "aarch64",
     "rootfs": "f2fs",
@@ -18,5 +18,5 @@
     "esp_size_mib": 512,
     "root_size_mib": null
   },
-  "note": "releasever 与 root_size_mib 为 null 是刻意的：前者决定包版本与 SELinux 元数据，后者决定分区方案，都不猜。工具遇到 null 会报错并指出该填哪个字段。"
+  "note": "releasever=44 与 fedora-sheng 的默认一致，镜像可拉取。root_size_mib 仍为 null：它决定分区方案，需要按实际可用空间定，不猜。"
 }
