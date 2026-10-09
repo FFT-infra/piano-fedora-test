@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/prepare_distro_host_tools.py
-          ls -l build/host-tools/usr/bin/ 2>/dev/null | head -10
+          ls -l build/distro-tools/usr/bin/ | head -10
 
       - name: Fetch upstream sources
         working-directory: sunuefi
