@@ -9,6 +9,7 @@ test:
 	python3 tests/check_first_partition.py
 	python3 tests/check_esp_image.py
 	python3 tests/check_patches.py
+	python3 tests/check_initramfs.py
 
 RELEASEVER ?= 44
 plan:

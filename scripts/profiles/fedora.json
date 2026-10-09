@@ -20,6 +20,7 @@
     "iw",
     "kmod",
     "util-linux",
+    "busybox",
     "polkit",
     "cracklib-dicts",
     "lm_sensors"

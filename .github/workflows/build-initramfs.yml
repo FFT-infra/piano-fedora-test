@@ -1,0 +1,133 @@
+name: build-initramfs
+
+# 从 Fedora rootfs 与内核产物构建 F2FS 根分区用的 initramfs。
+#
+# 上游的 release-rootfs 绑定 Debian（dpkg-query、/lib/aarch64-linux-gnu、
+# ext4 专用挂载），这份实现不依赖发行版包管理器，产出 f2fs 版引导脚本。
+#
+# 单 job：下载两个 artifact → 构建 → 解包核对 → 上传。不跨 job 搬大文件。
+on:
+  workflow_dispatch:
+    inputs:
+      rootfs_artifact:
+        description: "rootfs artifact 名"
+        required: true
+        default: "rootfs-44-gnome"
+      kernel_artifact:
+        description: "内核 artifact 名"
+        required: true
+        default: "kernel-release-7.2.9"
+
+permissions:
+  contents: read
+
+jobs:
+  initramfs:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils cpio zstd python3
+
+      - name: Find the runs that produced the inputs
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          find_run() {
+            local wf="$1" name="$2"
+            for id in $(gh run list --workflow="$wf" --limit 20 --json databaseId --jq '.[].databaseId'); do
+              if gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
+                   --jq ".artifacts[].name" 2>/dev/null | grep -qx "$name"; then
+                echo "$id"; return 0
+              fi
+            done
+            return 1
+          }
+          R=$(find_run build-rootfs.yml "${{ inputs.rootfs_artifact }}") \
+            || { echo "::error::rootfs artifact not found"; exit 1; }
+          K=$(find_run build-kernel.yml "${{ inputs.kernel_artifact }}") \
+            || { echo "::error::kernel artifact not found"; exit 1; }
+          echo "rootfs_run=$R" >> "$GITHUB_OUTPUT"
+          echo "kernel_run=$K" >> "$GITHUB_OUTPUT"
+          echo "rootfs run $R, kernel run $K"
+
+      - name: Download rootfs
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.rootfs_artifact }}
+          path: in/rootfs
+          run-id: ${{ steps.src.outputs.rootfs_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download kernel
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.kernel_artifact }}
+          path: in/kernel
+          run-id: ${{ steps.src.outputs.kernel_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unpack inputs
+        run: |
+          set -euo pipefail
+          mkdir -p stage/rootfs stage/kernel
+          # rootfs 里有 root 拥有的文件，解包需要 root 才能保留权限。
+          sudo tar -I zstd -xf in/rootfs/*.tar.zst -C stage/rootfs
+          tar -I zstd -xf in/kernel/*.tar.zst -C stage/kernel
+          test -d stage/rootfs/rootfs
+          test -f stage/kernel/manifest.json
+          sudo du -sh stage/rootfs/rootfs
+
+      - name: Build initramfs
+        run: |
+          set -euo pipefail
+          python3 scripts/build-initramfs.py \
+            --rootfs stage/rootfs/rootfs \
+            --kernel stage/kernel \
+            --output initramfs-out
+          cat initramfs-out/manifest.json
+
+      - name: Verify the archive
+        run: |
+          set -euo pipefail
+          cd initramfs-out
+          gzip -dc initramfs.cpio.gz > initramfs.cpio
+          cpio -it < initramfs.cpio > listing.txt
+          for required in init pianoinit bin/busybox bin/sh bin/mount bin/switch_root \
+                          bin/insmod etc/piano/root-label etc/piano/root-partname \
+                          etc/piano/kernel-release etc/piano/modules-load-order; do
+            grep -qx "$required" listing.txt || { echo "::error::$required missing"; exit 1; }
+          done
+          # 引导脚本必须是 F2FS 版本，不能留着 ext4 的类型检查。
+          cpio -idm --quiet usr/bin/blkid < initramfs.cpio 2>/dev/null || true
+          python3 - <<'PY'
+          import json, gzip, sys
+          from pathlib import Path
+          manifest = json.loads(Path("manifest.json").read_text())
+          assert manifest["root_fstype"] == "f2fs", manifest["root_fstype"]
+          assert manifest["device_tested"] is False, "must not claim device testing"
+          assert manifest["modules"], "empty module closure"
+          print("initramfs:", manifest["initramfs_bytes"], "bytes,",
+                len(manifest["modules"]), "modules")
+          PY
+          echo "entry count: $(wc -l < listing.txt)"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          tar -I 'zstd -10 -T0' -cf initramfs.tar.zst -C initramfs-out .
+          ls -lh initramfs.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: initramfs-f2fs
+          path: initramfs.tar.zst
+          retention-days: 14
+          compression-level: 1
