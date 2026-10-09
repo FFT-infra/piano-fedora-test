@@ -36,6 +36,20 @@ make test                  # 全部离线检查
 make plan RELEASEVER=44    # 打印 Fedora rootfs 构建计划
 ```
 
+## 长构建
+
+编译类 workflow（内核、UEFI、镜像、rootfs）动辄几十分钟到几小时，失败一次
+的代价是整轮重跑。因此**首次运行前必须先把该 workflow 完整审一遍**：
+
+- 逐个核对它调用的每个外部命令在 runner 上是否存在，不靠运行时才发现缺项。
+- 上游若自带构建容器或依赖清单（如 `containers/Dockerfile`、
+  `requirements-build.txt`），优先用它，不手工逐条补包。
+- 核对产物路径、权限（容器以 root 写入时需要 sudo）、以及跨 run 取
+  artifact 的 `run-id`。
+- 核对每个输入是否真的在仓库或上游里可取，特别是 vendor 目录与子模块。
+
+审完再触发，并把审查发现写进提交信息。
+
 ## 验证
 
 | 改了什么 | 跑什么 |
