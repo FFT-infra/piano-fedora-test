@@ -4,16 +4,17 @@
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "scripts" / "build-fedora-rootfs.py"
 
 
-def run(*args):
+def run(*args, cwd=ROOT):
     return subprocess.run(
         [sys.executable, str(TOOL), *args],
-        capture_output=True, text=True, cwd=ROOT,
+        capture_output=True, text=True, cwd=cwd,
     )
 
 
@@ -24,13 +25,19 @@ def main():
         if not condition:
             failures.append(message)
 
-    # releasever 在 product.json 里为 null：必须拒绝并说明是刻意留空。
-    result = run("--plan")
-    check(result.returncode == 2, "missing releasever should exit 2")
-    check("not guessed" in result.stderr, "should explain releasever is not guessed")
+    # releasever 留空时必须拒绝，并说明是刻意留空而非猜测。
+    # 用临时 product.json 测这条路径，不动仓库里的配置。
+    with tempfile.TemporaryDirectory() as tmp:
+        product = json.loads((ROOT / "product.json").read_text(encoding="utf-8"))
+        product["target"]["releasever"] = None
+        alt = Path(tmp) / "product.json"
+        alt.write_text(json.dumps(product), encoding="utf-8")
+        result = run("--plan", "--product", str(alt))
+        check(result.returncode == 2, "empty releasever should exit 2")
+        check("not guessed" in result.stderr, "should explain releasever is not guessed")
 
-    # 显式 releasever：plan 成功。
-    result = run("--plan", "--releasever", "44")
+    # 正常 plan。
+    result = run("--plan")
     check(result.returncode == 0, f"plan should succeed, got {result.returncode}")
     if result.returncode == 0:
         data = json.loads(result.stdout)
@@ -44,13 +51,13 @@ def main():
     check(run("--plan", "--releasever", "rawhide").returncode == 2, "rawhide should be rejected")
 
     # 未知桌面：拒绝。
-    check(run("--plan", "--releasever", "44", "--desktop", "dde").returncode == 2, "unknown desktop should be rejected")
+    check(run("--plan", "--desktop", "dde").returncode == 2, "unknown desktop should be rejected")
 
     # 输出越界：拒绝。
-    check(run("--plan", "--releasever", "44", "--output", "/tmp/x").returncode == 2, "outside output should be rejected")
+    check(run("--plan", "--output", "/tmp/x").returncode == 2, "outside output should be rejected")
 
     # server 桌面：接受，且无显示管理器。
-    result = run("--plan", "--releasever", "44", "--desktop", "server")
+    result = run("--plan", "--desktop", "server")
     check(result.returncode == 0, "server desktop should be accepted")
     if result.returncode == 0:
         check(json.loads(result.stdout)["display_manager"] is None, "server should have no display manager")

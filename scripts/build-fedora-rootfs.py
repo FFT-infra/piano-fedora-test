@@ -117,13 +117,14 @@ def main(argv=None):
     parser.add_argument("--releasever", help="Fedora 版本号；缺省读 product.json")
     parser.add_argument("--desktop", help="gnome / kde / server")
     parser.add_argument("--output", help="输出目录，必须在 build/distros/ 下")
+    parser.add_argument("--product", help="替代的 product.json 路径，用于测试与多目标")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        product = load_json(ROOT / "product.json")["target"]
+        product = load_json(args.product or ROOT / "product.json")["target"]
         profile = load_json(PROFILES / "fedora.json")
         desktops = load_json(PROFILES / "fedora-desktops.json")
 
