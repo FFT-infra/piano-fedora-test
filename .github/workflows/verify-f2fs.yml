@@ -34,6 +34,19 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq f2fs-tools attr
 
+      - name: Try to install the kernel f2fs module
+        run: |
+          set -euo pipefail
+          KREL="$(uname -r)"
+          # Azure 内核的额外模块常放在 linux-modules-extra 里。
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" 2>/dev/null \
+            || sudo apt-get install -y -qq linux-modules-extra-azure 2>/dev/null \
+            || echo "no modules-extra package matched"
+          sudo modprobe f2fs 2>&1 || true
+          echo "--- after install ---"
+          grep -cw f2fs /proc/filesystems || echo "still no f2fs"
+          modinfo f2fs 2>&1 | head -3 || true
+
       - name: Report kernel and tool capabilities
         run: |
           set -euo pipefail
