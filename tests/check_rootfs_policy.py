@@ -60,14 +60,10 @@ def main():
             check("PIANOROOT" in rules and "sunuefi_root" in rules,
                   "only the piano root may be released")
 
-            hook = (rootfs / "usr" / "lib" / "systemd" / "system-shutdown"
-                    / "f2fs-root-shutdown")
-            check(hook.is_file(), "the F2FS shutdown hook must be installed")
-            if hook.is_file():
-                check(hook.stat().st_mode & 0o111, "the shutdown hook must be executable")
-                text = hook.read_text()
-                check("f2fs_io" in text and "shutdown 0" in text,
-                      "the hook must call f2fs_io shutdown")
+            for unit in ("piano-swapfile.service", "qbootctl.service", "systemd-growfs-root.service"):
+                p = rootfs / "etc/systemd/system" / unit
+                check(p.is_symlink() and p.readlink() == Path("/dev/null"),
+                      f"{unit} must not write Android state or try unsupported F2FS growfs")
 
             policy = json.loads((rootfs / "etc" / "piano" / "root-policy.json").read_text())
             check(policy["root_fstype"] == "f2fs", "policy must record f2fs")

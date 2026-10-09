@@ -1,170 +1,185 @@
 name: build-image
 
-# 从 Fedora rootfs 制作可刷写的 F2FS root 镜像。
-#
-# 单 job 完成：下载 rootfs 与内核 → 写 F2FS 策略 → 装模块与硬件入口
-# → 制镜像 → 读回核对 → 打包上传。
-# 不跨 job 搬大文件。F2FS 需要内核模块，这里先装 linux-modules-extra。
+# 同一 job 组装 rootfs、模块/RPM、initramfs 与 F2FS 镜像；产物互相绑定摘要。
 on:
   workflow_dispatch:
     inputs:
       rootfs_artifact:
-        description: "rootfs artifact 名，例如 rootfs-44-gnome"
+        description: "Fedora 基础树 artifact"
         required: true
         default: "rootfs-44-gnome"
       kernel_artifact:
-        description: "内核 artifact 名（模块要装进 rootfs）"
+        description: "具有 F2FS/SELinux 配置的内核 artifact"
         required: true
         default: "kernel-release-7.2.9"
+      runtime_artifact:
+        description: "native Fedora 设备 RPM"
+        required: true
+        default: "piano-fedora-runtime"
       size_mib:
-        description: "root 镜像容量（MiB）"
+        description: "测试 root 镜像容量（MiB），不修改设备分区"
         required: false
         default: "8192"
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   image:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Prepare the image builder
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq f2fs-tools attr zstd binutils python3
-          # f2fs 挂载需要内核模块，默认不带。
-          KREL="$(uname -r)"
-          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" 2>/dev/null \
-            || sudo apt-get install -y -qq linux-modules-extra-azure 2>/dev/null \
-            || echo "no modules-extra matched"
-          sudo modprobe f2fs 2>&1 || true
-          if ! grep -qw f2fs /proc/filesystems; then
-            echo "::error::kernel cannot mount f2fs; image build needs it"
-            exit 1
-          fi
-          echo "f2fs mountable"
+          sudo apt-get install -y -qq f2fs-tools attr acl libcap2-bin zstd podman kmod binutils
+          sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)"
+          sudo modprobe f2fs
+          grep -qw f2fs /proc/filesystems
+          fsck.f2fs 2>&1 | sed -n '1,24p' || true
 
-      - name: Find the runs that produced the artifacts
+      - name: Resolve successful input runs
         id: source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROOTFS_ARTIFACT: ${{ inputs.rootfs_artifact }}
+          KERNEL_ARTIFACT: ${{ inputs.kernel_artifact }}
+          RUNTIME_ARTIFACT: ${{ inputs.runtime_artifact }}
         run: |
           set -euo pipefail
-          # download-artifact 默认只看当前 run。rootfs 与内核由另外的 run
-          # 产出，所以要显式找到各自的 run id。
-          find_run() {
-            local wf="$1" name="$2"
-            for id in $(gh run list --workflow="$wf" --limit 20 --json databaseId --jq '.[].databaseId'); do
-              if gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
-                   --jq ".artifacts[].name" 2>/dev/null | grep -qx "$name"; then
-                echo "$id"; return 0
-              fi
-            done
-            return 1
-          }
-          RID=$(find_run build-rootfs.yml "${{ inputs.rootfs_artifact }}") \
-            || { echo "::error::rootfs artifact not found"; exit 1; }
-          KID=$(find_run build-kernel.yml "${{ inputs.kernel_artifact }}") \
-            || { echo "::error::kernel artifact not found"; exit 1; }
-          echo "run_id=$RID" >> "$GITHUB_OUTPUT"
-          echo "kernel_run_id=$KID" >> "$GITHUB_OUTPUT"
-          echo "using rootfs run $RID, kernel run $KID"
+          python3 scripts/resolve-artifact-run.py --workflow build-rootfs.yml --artifact "$ROOTFS_ARTIFACT" --output-key rootfs_run
+          python3 scripts/resolve-artifact-run.py --workflow build-kernel.yml --artifact "$KERNEL_ARTIFACT" --artifact kernel-sdk-7.2.9 --output-key kernel_run
+          python3 scripts/resolve-artifact-run.py --workflow build-device-runtime.yml --artifact "$RUNTIME_ARTIFACT" --output-key runtime_run
 
-      - name: Download rootfs
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.rootfs_artifact }}
-          path: incoming
-          run-id: ${{ steps.source.outputs.run_id }}
+          path: build/in/base
+          run-id: ${{ steps.source.outputs.rootfs_run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download kernel
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.kernel_artifact }}
-          path: stage/kernel
-          run-id: ${{ steps.source.outputs.kernel_run_id }}
+          path: build/in/kernel
+          run-id: ${{ steps.source.outputs.kernel_run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Unpack rootfs
-        run: |
-          set -euo pipefail
-          mkdir -p work
-          sudo tar -I zstd -xf incoming/*.tar.zst -C work
-          test -d work/rootfs
-          sudo du -sh work/rootfs
-          # 内核 artifact 里是一层 tar.zst。
-          tar -I zstd -xf stage/kernel/*.tar.zst -C stage/kernel
-          test -f stage/kernel/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.runtime_artifact }}
+          path: build/in/runtime
+          run-id: ${{ steps.source.outputs.runtime_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apply the F2FS rootfs policy
+      - name: Unpack into separate component directories
         run: |
           set -euo pipefail
-          # fstab、udev 放行和关机 hook 都要是 F2FS 版本，且必须在制镜像
-          # 之前写进去，否则镜像里的挂载策略还是 ext4 的。
-          sudo python3 scripts/apply-rootfs-policy.py \
-            --rootfs work/rootfs \
-            --manifest rootfs-policy.json
-          cat rootfs-policy.json
+          mkdir -p build/device-root build/kernel build/runtime build/image-tmp
+          sudo tar -I zstd --numeric-owner --xattrs --xattrs-include='*' --acls --selinux -xf build/in/base/*.tar.zst -C build/device-root
+          tar -I zstd -xf build/in/kernel/*.tar.zst -C build/kernel
+          tar -I zstd -xf build/in/runtime/*.tar.zst -C build/runtime
+          python3 scripts/checkout-sources.py --output build/sources --mode boot
 
-      - name: Stage kernel modules and the piano hardware entry
+      - name: Validate and stage the sealed kernel payload
         run: |
           set -euo pipefail
-          # 引导脚本要求 rootfs 里有匹配 release 的模块和
-          # /usr/lib/piano/piano-disk-hardware-prepare，缺一个就进救援。
-          # 模块来自内核 artifact，硬件入口来自固定 commit 的 SunUEFI。
-          python3 - <<'PY' >> "$GITHUB_ENV"
-          import json
-          lock = json.load(open("sources.lock.json"))["sources"]
-          print("SUNUEFI_URL=" + lock["sunuefi"]["url"])
-          print("SUNUEFI_COMMIT=" + lock["sunuefi"]["commit"])
+          python3 - <<'PY'
+          import json, hashlib
+          from pathlib import Path
+          kernel_hash = hashlib.sha256(Path('build/kernel/manifest.json').read_bytes()).hexdigest()
+          runtime = json.loads(Path('build/runtime/manifest.json').read_text())
+          assert runtime['kernel_manifest_sha256'] == kernel_hash, 'runtime/kernel mismatch'
+          for name, item in runtime['rpms'].items():
+              p = Path('build/runtime/rpms') / name
+              assert p.is_file() and p.stat().st_size == item['bytes']
+              assert hashlib.sha256(p.read_bytes()).hexdigest() == item['sha256'], name
           PY
-          git clone --filter=blob:none "$SUNUEFI_URL" sunuefi
-          git -C sunuefi checkout "$SUNUEFI_COMMIT"
-          python3 scripts/apply-patches.py --sunuefi sunuefi
-          sudo python3 scripts/stage-rootfs-payload.py \
-            --rootfs work/rootfs \
-            --kernel stage/kernel \
-            --sunuefi sunuefi \
-            --manifest rootfs-payload.json
-          cat rootfs-payload.json
+          sudo python3 scripts/stage-rootfs-payload.py --rootfs build/device-root/rootfs --kernel build/kernel --sunuefi build/sources/sunuefi
+          sudo python3 scripts/apply-rootfs-policy.py --rootfs build/device-root/rootfs
 
-      - name: Build F2FS root image
+      - name: Install the native Fedora device RPMs
+        env:
+          PIANO_SCRATCH: ${{ github.workspace }}/build/image-tmp
         run: |
           set -euo pipefail
-          sudo python3 scripts/build-f2fs-image.py \
-            --rootfs work/rootfs \
-            --size-mib "${{ inputs.size_mib }}" \
-            --output "pianoroot-${{ inputs.size_mib }}.f2fs.img" \
-            --verify \
-            --manifest root-image-manifest.json
+          release=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["releasever"])')
+          sudo podman run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
+              release=$(python3 -c '\''import json; print(json.load(open("product.json"))["target"]["releasever"])'\'')
+              dnf -y --installroot=/workspace/build/device-root/rootfs --releasever="$release" --use-host-config \
+                --setopt=install_weak_deps=False --setopt=localpkg_gpgcheck=0 install \
+                /workspace/build/runtime/rpms/*.rpm erofs-utils device-mapper python3-gobject
+            '
+
+      - name: Finalize services and the rootfs identity
+        run: |
+          set -euo pipefail
+          sudo python3 scripts/finalize-fedora-rootfs.py --rootfs build/device-root/rootfs \
+            --kernel build/kernel --runtime build/runtime --output build/device-root
+          release=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["releasever"])')
+          sudo podman run --rm --privileged -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
+              dnf -y install policycoreutils
+              root=/workspace/build/device-root/rootfs
+              setfiles -F -r "$root" "$root/etc/selinux/targeted/contexts/files/file_contexts" "$root"
+            '
+
+      - name: Build the matching initramfs
+        run: |
+          set -euo pipefail
+          sudo python3 scripts/build-initramfs.py --rootfs build/device-root/rootfs --kernel build/kernel --output build/initramfs
+          cat build/initramfs/manifest.json
+
+      - name: Build and fully verify the F2FS image
+        env:
+          ROOT_SIZE: ${{ inputs.size_mib }}
+        run: |
+          set -euo pipefail
+          sudo env TMPDIR="$GITHUB_WORKSPACE/build/image-tmp" python3 scripts/build-f2fs-image.py \
+            --rootfs build/device-root/rootfs --size-mib "$ROOT_SIZE" \
+            --output pianoroot.f2fs.img --verify --manifest root-image-manifest.json
           cat root-image-manifest.json
+          zstd -10 -T0 -o pianoroot.f2fs.img.zst pianoroot.f2fs.img
 
-      - name: Report image size
+      - name: Package the same staged root and initramfs
+        env:
+          KERNEL_RUN: ${{ steps.source.outputs.kernel_run }}
+          ROOTFS_RUN: ${{ steps.source.outputs.rootfs_run }}
+          RUNTIME_RUN: ${{ steps.source.outputs.runtime_run }}
         run: |
           set -euo pipefail
-          ls -lh pianoroot-*.f2fs.img
-          echo "apparent: $(stat -c%s pianoroot-*.f2fs.img) bytes"
-          echo "on-disk:  $(du -h --apparent-size pianoroot-*.f2fs.img | cut -f1)"
-
-      - name: Compress image
-        run: |
-          set -euo pipefail
-          # 镜像大部分是空块，zstd 压得动。
-          zstd -10 -T0 --force -o "pianoroot-${{ inputs.size_mib }}.f2fs.img.zst" pianoroot-*.f2fs.img
-          ls -lh pianoroot-*.f2fs.img.zst
+          sudo tar --format=pax --numeric-owner --xattrs --xattrs-include='*' --acls --selinux \
+            -I 'zstd -6 -T0' -cf device-root.tar.zst -C build/device-root rootfs manifest.json packages.tsv
+          tar -I 'zstd -6 -T0' -cf initramfs.tar.zst -C build/initramfs .
+          cp build/kernel/manifest.json kernel-manifest.json
+          cp build/runtime/manifest.json runtime-manifest.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('source-runs.json').write_text(json.dumps({
+              'kernel_run': os.environ['KERNEL_RUN'], 'rootfs_run': os.environ['ROOTFS_RUN'],
+              'runtime_run': os.environ['RUNTIME_RUN']}, indent=2) + '\n')
+          PY
+          sudo chown "$(id -u):$(id -g)" device-root.tar.zst root-image-manifest.json
+          sha256sum pianoroot.f2fs.img.zst device-root.tar.zst initramfs.tar.zst > image-SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
           name: root-image-${{ inputs.size_mib }}
           path: |
-            pianoroot-*.f2fs.img.zst
+            pianoroot.f2fs.img.zst
             root-image-manifest.json
-            rootfs-policy.json
-            rootfs-payload.json
+            device-root.tar.zst
+            initramfs.tar.zst
+            kernel-manifest.json
+            runtime-manifest.json
+            image-SHA256SUMS
+            source-runs.json
+          if-no-files-found: error
           retention-days: 14
-          compression-level: 1
+          compression-level: 0

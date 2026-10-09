@@ -1,236 +1,125 @@
 name: build-bundle
 
-# 把部署需要的产物汇总成一个包：内核、UEFI、root 镜像、ESP 镜像、manifest。
-#
-# 输入是各构建 workflow 上传的 artifact。缺哪一项就明确失败，不产出半成品包。
-# 不接触设备。
-#
-# ESP 由上游 package_release.py 构建，不自己拼：它负责 DTB 的 CPU model
-# overlay、mkbootimg 合体 boot.img、固件要求的 /EFI/Piano/stable 布局和逐文件
-# 读回校验。自己重写这些只会漏掉其中一环。不给 --root-size-mib，root 由
-# 本仓库的 F2FS 流程产出，不用上游的 ext4 路径。
+# 只使用同一次集成产生的 root/image/initramfs，按其 source-runs.json 取内核。
 on:
   workflow_dispatch:
     inputs:
-      kernel_artifact:
-        description: "内核 artifact 名"
-        required: false
-        default: "kernel-release-7.2.9"
-      uefi_artifact:
-        description: "UEFI artifact 名"
-        required: false
-        default: "uefi-product"
       root_image_artifact:
-        description: "root 镜像 artifact 名"
+        description: "完整集成镜像 artifact"
         required: false
         default: "root-image-8192"
-      initramfs_artifact:
-        description: "initramfs artifact 名"
+      uefi_artifact:
+        description: "UEFI artifact"
         required: false
-        default: "initramfs-f2fs"
-      rootfs_artifact:
-        description: "rootfs artifact 名（上游打包器需要它做一致性核对）"
-        required: false
-        default: "rootfs-44-gnome"
+        default: "uefi-product"
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   bundle:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install packaging tools
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq zstd dosfstools mtools jq \
-            device-tree-compiler python3
-          for tool in mkfs.vfat mmd mcopy dtc fdtoverlay zstd; do
-            printf '%-12s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
-          done
+          sudo apt-get install -y -qq zstd dosfstools mtools device-tree-compiler python3 git
 
-      - name: Clone SunUEFI for the packaging tools
+      - name: Resolve complete image and UEFI inputs
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROOT_IMAGE: ${{ inputs.root_image_artifact }}
+          UEFI_ARTIFACT: ${{ inputs.uefi_artifact }}
         run: |
           set -euo pipefail
-          python3 - <<'PY' >> "$GITHUB_ENV"
-          import json
-          lock = json.load(open("sources.lock.json"))["sources"]
-          print("SUNUEFI_URL=" + lock["sunuefi"]["url"])
-          print("SUNUEFI_COMMIT=" + lock["sunuefi"]["commit"])
-          PY
-          git clone --filter=blob:none "$SUNUEFI_URL" sunuefi
-          git -C sunuefi checkout "$SUNUEFI_COMMIT"
-          # 补丁含 F2FS 配置片段，package_release 需要它参与摘要核对。
-          python3 scripts/apply-patches.py --sunuefi sunuefi
-          # mkbootimg 按 pinned commit 取用；上游要求它是注册过的子模块。
-          git -C sunuefi submodule update --init --depth 1 upstream/debian-piano-current \
-            || echo "::warning::submodule init failed; will report if mkbootimg is missing"
-          ls -la sunuefi/upstream/debian-piano-current/mkbootimg/mkbootimg.py 2>&1 || true
+          python3 scripts/resolve-artifact-run.py --workflow build-image.yml --artifact "$ROOT_IMAGE" --output-key root_run
+          python3 scripts/resolve-artifact-run.py --workflow build-uefi.yml --artifact "$UEFI_ARTIFACT" --output-key uefi_run
 
-      - name: Resolve artifact run ids
-        id: src
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.root_image_artifact }}
+          path: build/in/image
+          run-id: ${{ steps.src.outputs.root_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.uefi_artifact }}
+          path: build/in/uefi
+          run-id: ${{ steps.src.outputs.uefi_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the exact integrated kernel
+        id: kernel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # 三个输入来自不同 workflow 的不同 run，逐个找它们的 run id。
-          find_run() {
-            local wf="$1" name="$2"
-            for id in $(gh run list --workflow="$wf" --limit 20 --json databaseId --jq '.[].databaseId'); do
-              if gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
-                   --jq ".artifacts[].name" 2>/dev/null | grep -qx "$name"; then
-                echo "$id"; return 0
-              fi
-            done
-            return 1
-          }
-          K=$(find_run build-kernel.yml "${{ inputs.kernel_artifact }}") || { echo "::error::kernel artifact not found"; exit 1; }
-          U=$(find_run build-uefi.yml "${{ inputs.uefi_artifact }}") || { echo "::error::uefi artifact not found"; exit 1; }
-          R=$(find_run build-image.yml "${{ inputs.root_image_artifact }}") || { echo "::error::root image artifact not found"; exit 1; }
-          I=$(find_run build-initramfs.yml "${{ inputs.initramfs_artifact }}") || { echo "::error::initramfs artifact not found"; exit 1; }
-          F=$(find_run build-rootfs.yml "${{ inputs.rootfs_artifact }}") || { echo "::error::rootfs artifact not found"; exit 1; }
-          echo "kernel_run=$K" >> "$GITHUB_OUTPUT"
-          echo "uefi_run=$U" >> "$GITHUB_OUTPUT"
-          echo "root_run=$R" >> "$GITHUB_OUTPUT"
-          echo "initramfs_run=$I" >> "$GITHUB_OUTPUT"
-          echo "rootfs_run=$F" >> "$GITHUB_OUTPUT"
-          echo "kernel run $K, uefi run $U, root run $R, initramfs run $I, rootfs run $F"
+          run=$(python3 -c 'import json;print(json.load(open("build/in/image/source-runs.json"))["kernel_run"])')
+          python3 scripts/resolve-artifact-run.py --workflow build-kernel.yml --artifact kernel-release-7.2.9 --run-id "$run"
 
-      - name: Download kernel
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.kernel_artifact }}
-          path: in/kernel
-          run-id: ${{ steps.src.outputs.kernel_run }}
+          name: kernel-release-7.2.9
+          path: build/in/kernel
+          run-id: ${{ steps.kernel.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download UEFI
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.uefi_artifact }}
-          path: in/uefi
-          run-id: ${{ steps.src.outputs.uefi_run }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download root image
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.root_image_artifact }}
-          path: in/root
-          run-id: ${{ steps.src.outputs.root_run }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download initramfs
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.initramfs_artifact }}
-          path: in/initramfs
-          run-id: ${{ steps.src.outputs.initramfs_run }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download rootfs
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.rootfs_artifact }}
-          path: in/rootfs
-          run-id: ${{ steps.src.outputs.rootfs_run }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Unpack inputs
+      - name: Unpack the isolated components and verify identity
         run: |
           set -euo pipefail
-          mkdir -p stage
-          for part in kernel uefi root initramfs; do
-            for archive in in/$part/*.tar.zst; do
-              [ -e "$archive" ] || continue
-              tar -I zstd -xf "$archive" -C stage
-            done
-          done
-          # rootfs 里有 root 拥有的文件，解包需要 root 才能保留权限。
-          sudo tar -I zstd -xf in/rootfs/*.tar.zst -C stage
-          test -d stage/rootfs/rootfs
-          find stage -maxdepth 3 -type f | head -40
+          mkdir -p build/kernel build/uefi build/initramfs build/device-root
+          tar -I zstd -xf build/in/kernel/*.tar.zst -C build/kernel
+          tar -I zstd -xf build/in/uefi/*.tar.zst -C build/uefi
+          tar -I zstd -xf build/in/image/initramfs.tar.zst -C build/initramfs
+          sudo tar -I zstd --numeric-owner --xattrs --xattrs-include='*' --acls --selinux -xf build/in/image/device-root.tar.zst -C build/device-root
+          (cd build/in/image && sha256sum -c image-SHA256SUMS)
+          cmp build/kernel/manifest.json build/in/image/kernel-manifest.json
+          python3 scripts/checkout-sources.py --output build/sources --mode boot
 
-      - name: Locate inputs for the upstream packager
-        id: find
+      - name: Create the upstream-compatible ESP and Linux boot payload
         run: |
           set -euo pipefail
-          efi="$(find stage -iname 'PianoUEFI-product.img' | head -1)"
-          kernel="$(dirname "$(find stage -path '*/kernels/*/manifest.json' | head -1)")"
-          initramfs="$(dirname "$(find stage -path '*initramfs*/manifest.json' | head -1)")"
-          [ -n "$efi" ] || { echo "::error::no UEFI image found"; exit 1; }
-          [ -n "$kernel" ] || { echo "::error::no kernel artifact found"; exit 1; }
-          [ -n "$initramfs" ] || { echo "::error::no initramfs artifact found"; exit 1; }
-          echo "efi=$efi" >> "$GITHUB_OUTPUT"
-          echo "kernel=$kernel" >> "$GITHUB_OUTPUT"
-          echo "initramfs=$initramfs" >> "$GITHUB_OUTPUT"
-          echo "UEFI: $efi"; echo "kernel: $kernel"; echo "initramfs: $initramfs"
-
-      - name: Build ESP and combined boot.img with the upstream packager
-        run: |
-          set -euo pipefail
-          # DTB 是发布输入，不是内核产物：它带板级修正，还要过 CPU model overlay。
-          # package_release 会在 ESP 里逐文件读回校验，也会打合体 boot.img。
-          # 不给 --root-size-mib，跳过它的 ext4 路径。
-          python3 sunuefi/tools/package_release.py \
-            --uefi "${{ steps.find.outputs.efi }}" \
-            --kernel "${{ steps.find.outputs.kernel }}" \
-            --dtb sunuefi/vendor/piano-linux/board.dtb \
-            --cpu-model-overlay sunuefi/linux/dts/piano-cpu-model.dtso \
+          # stock Android BOOT 包装仍要求本机当前 BOOT，通用包不冒充已部署合体 BOOT。
+          sudo python3 build/sources/sunuefi/tools/package_release.py \
+            --uefi build/uefi/PianoUEFI-product.img --kernel build/kernel \
+            --dtb build/sources/sunuefi/vendor/piano-linux/board.dtb \
+            --cpu-model-overlay build/sources/sunuefi/linux/dts/piano-cpu-model.dtso \
             --panel-vendor auto \
-            --dtb-overlay sunuefi/linux/dts/piano-board-identity.dtso \
-            --dtb-overlay sunuefi/linux/dts/piano-regdma-resource.dtso \
-            --dtb-overlay sunuefi/linux/dts/piano-audio-dmic-clock.dtso \
-            --dtb-overlay sunuefi/linux/dts/piano-camera-flash.dtso \
-            --dtb-overlay sunuefi/linux/dts/piano-camera-privacy-led.dtso \
-            --initramfs "${{ steps.find.outputs.initramfs }}/initramfs.cpio.gz" \
-            --rootfs stage/rootfs/rootfs \
-            --root-selector LABEL=PIANOROOT \
-            --esp-size-mib 512 \
-            --output packaged
-          ls -lh packaged/
+            --dtb-overlay build/sources/sunuefi/linux/dts/piano-board-identity.dtso \
+            --dtb-overlay build/sources/sunuefi/linux/dts/piano-regdma-resource.dtso \
+            --dtb-overlay build/sources/sunuefi/linux/dts/piano-audio-dmic-clock.dtso \
+            --dtb-overlay build/sources/sunuefi/linux/dts/piano-camera-flash.dtso \
+            --dtb-overlay build/sources/sunuefi/linux/dts/piano-camera-privacy-led.dtso \
+            --initramfs build/initramfs/initramfs.cpio.gz \
+            --rootfs build/device-root/rootfs --rootfs-manifest build/device-root/manifest.json \
+            --root-selector LABEL=PIANOROOT --esp-size-mib 512 --output build/packaged
 
-      - name: Assemble bundle
+      - name: Assemble and verify the delivery set
         run: |
           set -euo pipefail
           mkdir -p bundle
-          cp packaged/esp.img bundle/
-          cp packaged/boot.img bundle/
-          cp in/root/*.f2fs.img.zst bundle/ 2>/dev/null || true
-          cp in/root/root-image-manifest.json bundle/ 2>/dev/null || true
-          cp packaged/manifest.json bundle/packaged-manifest.json
-          cp packaged/SHA256SUMS bundle/packaged-SHA256SUMS
-          python3 - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-          files = {}
-          for path in sorted(Path("bundle").iterdir()):
-              if path.is_file():
-                  h = hashlib.sha256()
-                  with path.open("rb") as stream:
-                      for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                          h.update(chunk)
-                  files[path.name] = {"bytes": path.stat().st_size, "sha256": h.hexdigest()}
-          manifest = {
-              "device": "piano",
-              "root_label": "PIANOROOT",
-              "esp_label": "SUNUEFI_ESP",
-              "files": files,
-              "device_tested": False,
-              "note": "部署前必须完成可恢复备份。设备写入是独立的人工步骤。",
-          }
-          Path("bundle/bundle-manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-          print(json.dumps(manifest, indent=2, ensure_ascii=False))
-          PY
+          sudo cp build/packaged/esp.img build/packaged/boot.img build/packaged/PianoUEFI-product.img bundle/
+          cp build/in/image/pianoroot.f2fs.img.zst bundle/
+          cp build/in/image/root-image-manifest.json build/in/image/source-runs.json build/in/image/runtime-manifest.json bundle/
+          cp build/kernel/manifest.json bundle/kernel-manifest.json
+          cp build/initramfs/manifest.json bundle/initramfs-manifest.json
+          sudo cp build/packaged/manifest.json bundle/esp-manifest.json
+          sudo chown -R "$(id -u):$(id -g)" bundle
+          python3 scripts/verify-bundle.py --bundle bundle --write-manifest
+          (cd bundle && sha256sum -c SHA256SUMS)
           ls -lh bundle/
 
       - uses: actions/upload-artifact@v4
         with:
           name: deploy-bundle
           path: bundle/
+          if-no-files-found: error
           retention-days: 14
-          compression-level: 1
+          compression-level: 0
