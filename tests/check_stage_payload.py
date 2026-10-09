@@ -64,19 +64,23 @@ def main():
         tmp = Path(tmp)
         rootfs = make_rootfs(tmp)
         kernel = make_kernel(tmp)
+        # 通用拒绝路径用自带 fixture，CI 无须具有研究仓库的兄弟目录。
+        preflight_source = tmp / "preflight-source"
+        preflight_source.mkdir()
+        (preflight_source / "build.sh").write_text("#!/bin/sh\n")
 
         # 空目录不算系统树。
         empty = tmp / "empty"
         empty.mkdir()
         check(run("--rootfs", str(empty), "--kernel", str(kernel),
-                  "--sunuefi", str(SUNUEFI)).returncode == 2,
+                  "--sunuefi", str(preflight_source)).returncode == 2,
               "a directory without usr/ should be rejected")
 
         # 内核 manifest 缺失：拒绝。
         bare = tmp / "bare-kernel"
         bare.mkdir()
         check(run("--rootfs", str(rootfs), "--kernel", str(bare),
-                  "--sunuefi", str(SUNUEFI)).returncode == 2,
+                  "--sunuefi", str(preflight_source)).returncode == 2,
               "a kernel artifact without manifest should be rejected")
 
         # 目标穿过符号链接：拒绝。
@@ -85,7 +89,7 @@ def main():
         tricky = make_rootfs(tmp / "tricky")
         (tricky / "usr" / "lib").symlink_to("/etc")
         result = run("--rootfs", str(tricky), "--kernel", str(kernel),
-                     "--sunuefi", str(SUNUEFI))
+                     "--sunuefi", str(preflight_source))
         check(result.returncode == 2 and "symlink" in result.stderr,
               f"a destination through a symlink should be rejected: {result.stderr.strip()}")
 
