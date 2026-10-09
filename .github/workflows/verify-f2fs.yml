@@ -40,6 +40,15 @@ jobs:
           fi
           cat /proc/filesystems | grep -i f2fs || true
 
+      - name: Check available f2fs tools
+        run: |
+          set -euo pipefail
+          echo "mkfs.f2fs: $(command -v mkfs.f2fs || echo MISSING)"
+          echo "fsck.f2fs: $(command -v fsck.f2fs || echo MISSING)"
+          echo "sload.f2fs: $(command -v sload.f2fs || echo MISSING)"
+          echo "dump.f2fs: $(command -v dump.f2fs || echo MISSING)"
+          ls -1 /usr/sbin/f2fs* /usr/bin/f2fs* 2>/dev/null || true
+
       - name: Build fixture rootfs
         run: |
           set -euo pipefail
