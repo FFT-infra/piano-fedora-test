@@ -1,0 +1,134 @@
+name: build-bundle
+
+# 把部署需要的产物汇总成一个包：内核、UEFI、root 镜像、ESP 镜像、manifest。
+#
+# 输入是各构建 workflow 上传的 artifact。缺哪一项就明确失败，不产出半成品包。
+# 不接触设备。
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_artifact:
+        description: "内核 artifact 名"
+        required: false
+        default: "kernel-release-7.2.9"
+      uefi_artifact:
+        description: "UEFI artifact 名"
+        required: false
+        default: "uefi-product"
+      root_image_artifact:
+        description: "root 镜像 artifact 名"
+        required: false
+        default: "root-image-8192"
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd dosfstools mtools jq
+
+      - name: Download kernel
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.kernel_artifact }}
+          path: in/kernel
+
+      - name: Download UEFI
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.uefi_artifact }}
+          path: in/uefi
+
+      - name: Download root image
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.root_image_artifact }}
+          path: in/root
+
+      - name: Unpack inputs
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          for part in kernel uefi root; do
+            for archive in in/$part/*.tar.zst; do
+              [ -e "$archive" ] || continue
+              tar -I zstd -xf "$archive" -C stage
+            done
+          done
+          find stage -maxdepth 3 -type f | head -40
+
+      - name: Locate boot files
+        id: find
+        run: |
+          set -euo pipefail
+          efi="$(find stage -iname 'BOOTAA64.EFI' -o -iname 'PianoUEFI-product.img' | head -1)"
+          image="$(find stage -iname 'Image' -o -iname 'Image.gz' | head -1)"
+          dtb="$(find stage -iname 'sm8750-xiaomi-piano.dtb' | head -1)"
+          [ -n "$efi" ] || { echo "::error::no UEFI image found"; exit 1; }
+          [ -n "$image" ] || { echo "::error::no kernel Image found"; exit 1; }
+          [ -n "$dtb" ] || { echo "::error::no piano DTB found"; exit 1; }
+          echo "efi=$efi" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "dtb=$dtb" >> "$GITHUB_OUTPUT"
+          echo "UEFI: $efi"; echo "Image: $image"; echo "DTB: $dtb"
+
+      - name: Build ESP image
+        run: |
+          set -euo pipefail
+          python3 scripts/build-esp-image.py \
+            --size-mib 512 \
+            --label SUNUEFI_ESP \
+            --file "EFI/BOOT/BOOTAA64.EFI:${{ steps.find.outputs.efi }}" \
+            --file "Image:${{ steps.find.outputs.image }}" \
+            --file "piano.dtb:${{ steps.find.outputs.dtb }}" \
+            --output esp.img \
+            --manifest esp-manifest.json
+          cat esp-manifest.json
+
+      - name: Assemble bundle
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          cp esp.img bundle/
+          cp in/root/*.f2fs.img.zst bundle/ 2>/dev/null || true
+          cp in/root/root-image-manifest.json bundle/ 2>/dev/null || true
+          cp esp-manifest.json bundle/
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          files = {}
+          for path in sorted(Path("bundle").iterdir()):
+              if path.is_file():
+                  h = hashlib.sha256()
+                  with path.open("rb") as stream:
+                      for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                          h.update(chunk)
+                  files[path.name] = {"bytes": path.stat().st_size, "sha256": h.hexdigest()}
+          manifest = {
+              "device": "piano",
+              "root_label": "PIANOROOT",
+              "esp_label": "SUNUEFI_ESP",
+              "files": files,
+              "device_tested": False,
+              "note": "部署前必须完成可恢复备份。设备写入是独立的人工步骤。",
+          }
+          Path("bundle/bundle-manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+          print(json.dumps(manifest, indent=2, ensure_ascii=False))
+          PY
+          ls -lh bundle/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deploy-bundle
+          path: bundle/
+          retention-days: 14
+          compression-level: 1
