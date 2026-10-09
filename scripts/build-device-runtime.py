@@ -84,7 +84,13 @@ def sensors_source(output, name, version, archive_name, digest):
 
 def build_sensors(sun, output):
     """取固定源码而非 Debian 二进制，在 Fedora 库 ABI 上构建。"""
-    sensor = sun / "upstream/piano-sensors-current"
+    sensor = output / "sensor-source"
+    shutil.copytree(sun / "upstream/piano-sensors-current", sensor,
+                    ignore=shutil.ignore_patterns(".git"))
+    # 顶层补丁修改 piano-sensors 的包装并增加 patches/libssc/ 内部补丁；
+    # 必须先作用于仓库副本，不能直接作用于第三方 libssc 源码。
+    for p in sorted((sun / "patches/piano-sensors").glob("*.patch")):
+        run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", p], cwd=sensor)
     rows = [
         ("libssc", "0.4.4", "libssc_0.4.4.orig.tar.gz",
          "716d6bd6b34d2d753060c6b54c9a87e34fae75b724c763bf9ef487efa3621587"),
@@ -95,9 +101,6 @@ def build_sensors(sun, output):
     for name, version, archive, digest in rows:
         source = sensors_source(output, name, version, archive, digest)
         patches = list((sensor / "patches" / name).glob("*.patch"))
-        if name == "libssc":
-            # SunUEFI 的属性类型与 raw vector 补丁属于同一已锁定版本。
-            patches += sorted((sun / "patches/piano-sensors").glob("000[23]*.patch"))
         for patch in sorted(patches):
             run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", patch], cwd=source)
         build = output / (name + "-build")
@@ -211,12 +214,10 @@ def build(args):
                        ("90-xiaomi-mipps-auth.rules", "usr/lib/udev/rules.d/90-xiaomi-mipps-auth.rules")):
         put(mipps / name, payload / path, name == "xiaomi-mipps-auth")
     sensor_proof = build_sensors(sun, output)
-    sensor = sun / "upstream/piano-sensors-current"
+    sensor = output / "sensor-source"
     integration = output / "piano-sensors"
     shutil.copytree(sensor / "piano-sensors", integration)
-    run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i",
-         sun / "patches/piano-sensors/0001-import-vendor-reg-config.patch"], cwd=output)
-    # 该补丁的根路径是 piano-sensors/，保持对应目录名。
+    # importer 与 unit 使用同一份已应用包装补丁的仓库副本。
     for name in ("piano-sensors-import", "piano-sensors-lp-table", "piano-sensors-wait"):
         put(integration / name, payload / "usr/libexec/piano-sensors" / name, True)
     for name in ("adsprpcd-sensorspd.service", "piano-sensors-import.service"):
