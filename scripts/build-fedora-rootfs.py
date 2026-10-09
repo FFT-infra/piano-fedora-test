@@ -12,6 +12,7 @@
 
 import argparse
 import json
+import platform
 import shutil
 import subprocess
 import sys
@@ -93,6 +94,8 @@ def execute(result, profile):
     runtime = container_runtime()
     if runtime is None:
         raise BackendError("need podman or docker to run dnf --installroot")
+    if platform.machine() not in ("aarch64", "arm64"):
+        raise BackendError("execute requires the native aarch64 Actions builder")
 
     cmd = [
         runtime, "run", "--rm",
@@ -105,6 +108,18 @@ def execute(result, profile):
     ]
     with (out / "build.log").open("w") as stream:
         subprocess.run(cmd, stdout=stream, stderr=subprocess.STDOUT, check=True)
+
+    packages = subprocess.check_output([
+        runtime, "run", "--rm", "-v", f"{root}:/mnt/rootfs:Z", result["image"],
+        "rpm", "--root=/mnt/rootfs", "-qa",
+        "--qf", "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n",
+    ], text=True)
+    (out / "packages.tsv").write_text("".join(sorted(packages.splitlines(keepends=True))))
+    result["container_id"] = subprocess.check_output([
+        runtime, "image", "inspect", "--format", "{{.Id}}", result["image"]
+    ], text=True).strip()
+    result["packages_installed"] = len(packages.splitlines())
+    result["device_layers_staged"] = False
 
     result["status"] = "BUILT_NOT_BOOT_VERIFIED"
     result["rootfs"] = str(root)

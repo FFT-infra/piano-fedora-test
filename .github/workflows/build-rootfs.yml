@@ -1,6 +1,6 @@
 name: build-rootfs
 
-# 在 x86_64 runner 上构建 aarch64 Fedora rootfs。用 podman + dnf --installroot，
+# 在原生 aarch64 runner 上构建 Fedora 基础 rootfs。用 podman + dnf --installroot，
 # 不接触设备。
 on:
   workflow_dispatch:
@@ -30,15 +30,15 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq podman
+          sudo apt-get install -y -qq podman zstd
 
       - name: Pull Fedora image
-        run: podman pull "registry.fedoraproject.org/fedora:${{ inputs.releasever }}"
+        run: sudo podman pull "registry.fedoraproject.org/fedora:${{ inputs.releasever }}"
 
       - name: Build rootfs
         run: |
           set -euo pipefail
-          python3 scripts/build-fedora-rootfs.py \
+          sudo python3 scripts/build-fedora-rootfs.py \
             --execute \
             --releasever "${{ inputs.releasever }}" \
             --desktop "${{ inputs.desktop }}"
@@ -59,14 +59,15 @@ jobs:
           OUT="build/distros/fedora-${{ inputs.releasever }}-${{ inputs.desktop }}"
           # rootfs 里 root 拥有的文件普通用户读不了，打包同样需要 root。
           sudo tar -I 'zstd -10 -T0' -cf "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst" \
-            -C "$OUT" rootfs manifest.json
+            --numeric-owner --xattrs --xattrs-include='*' --acls --selinux \
+            -C "$OUT" rootfs manifest.json packages.tsv
           sudo chown "$(id -u):$(id -g)" "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst"
           ls -lh rootfs-*.tar.zst
 
-      # 仓库为 public，artifact 存储与 Actions 分钟数不计费。
       - name: Upload rootfs artifact
         uses: actions/upload-artifact@v4
         with:
           name: rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}
           path: rootfs-*.tar.zst
+          if-no-files-found: error
           retention-days: 14

@@ -21,12 +21,26 @@
     "kmod",
     "util-linux",
     "busybox",
+    "python3",
+    "f2fs-tools",
+    "selinux-policy-targeted",
+    "policycoreutils",
+    "libselinux-utils",
+    "bluez",
+    "qrtr",
+    "rmtfs",
+    "tqftpserv",
+    "fastrpc",
+    "alsa-utils",
+    "alsa-ucm",
+    "rtkit",
     "polkit",
     "cracklib-dicts",
     "lm_sensors"
   ],
   "dnf_options": [
     "--use-host-config",
+    "--exclude=kernel*",
     "--setopt=install_weak_deps=False",
     "--setopt=tsflags=nodocs"
   ]
