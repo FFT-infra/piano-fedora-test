@@ -39,9 +39,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p work
-          tar -I zstd -xf incoming/*.tar.zst -C work
+          # rootfs 里有 root 拥有的文件，解包需要 root 才能保留权限。
+          sudo tar -I zstd -xf incoming/*.tar.zst -C work
           test -d work/rootfs
-          du -sh work/rootfs
+          sudo du -sh work/rootfs
 
       - name: Build F2FS image and verify
         run: |

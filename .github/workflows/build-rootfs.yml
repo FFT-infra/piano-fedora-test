@@ -57,8 +57,11 @@ jobs:
         run: |
           set -euo pipefail
           OUT="build/distros/fedora-${{ inputs.releasever }}-${{ inputs.desktop }}"
-          tar -I 'zstd -10 -T0' -cf "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst" \
+          # rootfs 里 root 拥有的文件普通用户读不了，打包同样需要 root。
+          sudo tar -I 'zstd -10 -T0' -cf "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst" \
             -C "$OUT" rootfs manifest.json
+          sudo chown "$(id -u):$(id -g)" "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst"
+          ls -lh rootfs-*.tar.zst
 
       - uses: actions/upload-artifact@v4
         with:
