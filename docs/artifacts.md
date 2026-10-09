@@ -4,17 +4,21 @@
 
 | 产物 | 来源 | 本仓库状态 |
 | --- | --- | --- |
-| UEFI 固件（合体 BOOT） | SunUEFI `build.sh uefi` | 待接入 |
+| UEFI 固件（合体 BOOT） | SunUEFI `build.sh uefi` | 已在 CI 构建 |
 | 内核 Image + DTB + modules | SunUEFI `build.sh linux` | 待接入 |
 | Fedora rootfs 树 | 本仓库 `build-rootfs.yml` | 已在 CI 构建 |
 | F2FS root 镜像 | 本仓库 `build-image.yml` | 已实现 |
 | ESP 镜像 | 本仓库 `build-esp-image.py` | 已实现 |
 
-## 启动链与内核为什么待接入
+## UEFI 构建
 
-SunUEFI 的构建链需要固定源码、EDK2 工具链和 ARM64 交叉编译环境，整链约 4~5 小时。它的公开 CI 当前在 Sensors 阶段失败（`mk-build-deps`），需要在我们的 workflow 里绕过 Sensors 只构建需要的部分。
+`build-uefi.yml` 用 SunUEFI 官方的 `containers/Dockerfile` 建构建容器，在容器里跑 `build.sh sources` 与 `build.sh uefi`。手工逐个补宿主依赖会在长构建中途才暴露缺项，改用官方容器一次装齐。
 
-接入方式：按 `sources.lock.json` 的 commit 取 SunUEFI，在我们的 workflow 里调用它的 `build.sh uefi` 与 `build.sh linux`，产物与本仓库的 rootfs、镜像汇总成部署包。
+实测产物：`PianoUEFI-product.img`（28 MB）、`PianoUEFI-product.fd`（3 MB）、`BootShim.bin`，附 manifest 记录各来源 SHA。
+
+## 内核为什么待接入
+
+内核构建约 2.5 小时，`build-kernel.yml` 已实现，正在首次运行。它按 `sources.lock.json` 取 SunUEFI 与内核的固定 commit，跑 `prepare_release_kernel` 与 `build_piano_full_kernel`。
 
 ## 部署包应有的内容
 
