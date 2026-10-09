@@ -36,17 +36,17 @@ jobs:
           PY
           cat "$GITHUB_OUTPUT"
 
-      - name: Install build tools
+      # 用 SunUEFI 官方的构建容器，而不是逐个补宿主依赖。
+      # containers/Dockerfile 已列全所需包，包括 gettext、fonts-noto-cjk、
+      # gcc/binutils-aarch64-linux-gnu、acpica-tools、mtools、dosfstools。
+      # 手工装包会在长构建中途才暴露缺项，逐个试错代价高。
+      - name: Build the official builder image
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            build-essential nasm iasl uuid-dev python3 python3-venv \
-            python3-pip git wget curl xz-utils zstd \
-            bison flex libssl-dev libelf-dev \
-            libarchive-tools cpio \
-            fonts-noto-cjk
-          python3 --version
+          git clone --depth 1 "${{ steps.pins.outputs.sunuefi_url }}" sunuefi-image
+          git -C sunuefi-image fetch --depth 1 origin "${{ steps.pins.outputs.sunuefi_commit }}"
+          git -C sunuefi-image checkout FETCH_HEAD
+          docker build -t sunuefi-builder -f sunuefi-image/containers/Dockerfile sunuefi-image
 
       - name: Clone SunUEFI at the pinned commit
         run: |
@@ -57,50 +57,37 @@ jobs:
           git -C sunuefi checkout "$REF"
           echo "sunuefi at $(git -C sunuefi rev-parse HEAD)"
 
-      - name: Prepare Python environment
-        working-directory: sunuefi
+      - name: Build UEFI product firmware in the container
         run: |
           set -euo pipefail
-          python3 -m venv .venv
-          .venv/bin/pip install --quiet --upgrade pip
-          .venv/bin/pip install --quiet -r requirements-build.txt
-
-      - name: Fetch pinned host toolchain
-        working-directory: sunuefi
-        run: |
-          set -euo pipefail
-          python3 tools/prepare_distro_host_tools.py
-          ls -l build/distro-tools/usr/bin/ | head -10
-
-      - name: Fetch upstream sources
-        working-directory: sunuefi
-        run: |
-          set -euo pipefail
-          # SunUEFI 用 git submodule 固定依赖；相对 URL 在浅克隆里可能失效，
-          # 先把 submodule 的 URL 改成绝对地址。
-          git submodule sync --recursive
-          git -c protocol.file.allow=always submodule update --init --depth 1 \
-            upstream/Mu-Silicium upstream/simple-init upstream/dtc 2>&1 | tail -20 || true
-          # 嵌套子模块由项目脚本处理。
-          python3 tools/prepare_sources.py 2>&1 | tail -20
-
-      - name: Build UEFI product firmware
-        working-directory: sunuefi
-        run: bash tools/build_product.sh
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/sunuefi:/workspace" \
+            -w /workspace \
+            sunuefi-builder bash -euc '
+              git config --global --add safe.directory /workspace
+              git config --global --add safe.directory "/workspace/*"
+              python3 -m venv .venv
+              .venv/bin/pip install --quiet --upgrade pip
+              .venv/bin/pip install --quiet -r requirements-build.txt
+              ./build.sh sources
+              ./build.sh uefi
+            '
 
       - name: Inspect UEFI artifacts
         working-directory: sunuefi
         run: |
           set -euo pipefail
-          ls -lh artifacts/product/
-          cat artifacts/product/manifest.json 2>/dev/null || true
+          # 容器以 root 写入产物，检查与打包都要 sudo。
+          sudo ls -lh artifacts/product/
+          sudo cat artifacts/product/manifest.json 2>/dev/null || true
 
       - name: Package UEFI artifacts
         working-directory: sunuefi
         run: |
           set -euo pipefail
-          tar -I 'zstd -10 -T0' -cf "$GITHUB_WORKSPACE/uefi-product.tar.zst" \
+          sudo tar -I 'zstd -10 -T0' -cf "$GITHUB_WORKSPACE/uefi-product.tar.zst" \
             -C artifacts/product .
+          sudo chown "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/uefi-product.tar.zst"
           ls -lh "$GITHUB_WORKSPACE"/uefi-product.tar.zst
 
       - uses: actions/upload-artifact@v4

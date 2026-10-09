@@ -1,17 +1,13 @@
-name: verify-f2fs
+name: verify-tools
 
-# 在 CI 上验证 f2fs 工具链的实际能力，并如实记录边界。
+# 在 CI 上验证镜像工具的实际行为，并如实记录边界。
 #
-# GitHub runner 的内核（6.17.0-1022-azure）没有 f2fs 模块，
-# /proc/filesystems 里没有 f2fs，所以无法挂载镜像。
-# 因此这里不假装能做完整镜像，只验证离线工具能做什么、不能做什么。
+# f2fs 部分：GitHub runner 的内核默认不带 f2fs 模块，装上
+# linux-modules-extra 后可以挂载，这里做真实的往返验证。
 #
 # 已实测的边界：
 #   sload.f2fs -P  保留 owner 与 setuid，但不保留 user xattr。
-#   挂载 + tar --xattrs 能保留 xattr，但需要内核支持，CI 上做不到。
-#
-# 结论：完整 F2FS 镜像在支持挂载的环境生成（本地或自托管 runner），
-# CI 负责验证工具行为与离线可做的部分。
+#   挂载 + tar --xattrs 能保留 xattr，是制镜像采用的路径。
 on:
   push:
     branches: ["main"]
@@ -28,11 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install f2fs-tools
+      - name: Install tools
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq f2fs-tools attr
+          sudo apt-get install -y -qq f2fs-tools attr dosfstools mtools
 
       - name: Try to install the kernel f2fs module
         run: |
@@ -97,6 +93,43 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: f2fs-manifest
-          path: f2fs-manifest.json
+          name: tool-manifests
+          path: |
+            f2fs-manifest.json
+            esp-manifest.json
           retention-days: 7
+
+  esp:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ESP tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dosfstools mtools python3
+
+      - name: Build a fixture ESP and read it back
+        run: |
+          set -euo pipefail
+          mkdir -p fixture
+          printf 'MZfake-efi-application' > fixture/BOOTAA64.EFI
+          printf 'fake-kernel-image' > fixture/Image
+          printf 'fake-dtb' > fixture/piano.dtb
+          python3 scripts/build-esp-image.py \
+            --size-mib 64 \
+            --label SUNUEFI_ESP \
+            --file "EFI/BOOT/BOOTAA64.EFI:fixture/BOOTAA64.EFI" \
+            --file "Image:fixture/Image" \
+            --file "piano.dtb:fixture/piano.dtb" \
+            --output esp.img \
+            --manifest esp-manifest.json
+          cat esp-manifest.json
+          # 从镜像里读回，确认文件真的写进去了。
+          mdir -i esp.img -/ -b
+          for name in EFI/BOOT/BOOTAA64.EFI Image piano.dtb; do
+            mtype -i esp.img "::/$name" > /dev/null || { echo "::error::$name missing from ESP"; exit 1; }
+          done
+          echo "ESP roundtrip OK"
