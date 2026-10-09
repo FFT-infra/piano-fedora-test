@@ -6,18 +6,21 @@
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from kernel_fixture import make_kernel as sealed_fixture
+
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "scripts" / "stage-rootfs-payload.py"
 RELEASE = "7.2.9-fixture"
 
 # 与研究仓库同级；不存在时只跳过需要真实 SunUEFI 的用例。
-SUNUEFI = ROOT.parent / "mipad8p-piano" / "sources" / "Project-SunUEFI"
+SUNUEFI = Path(os.environ.get("PIANO_TEST_SUNUEFI", ROOT / "build/test-sunuefi"))
 
 
 def run(*args):
@@ -37,15 +40,7 @@ def make_rootfs(tmp):
 
 
 def make_kernel(tmp):
-    kernel = tmp / "kernel"
-    modules = kernel / "modules" / "lib" / "modules" / RELEASE / "kernel" / "drivers" / "iommu"
-    modules.mkdir(parents=True)
-    (modules / "arm-smmu.ko").write_bytes(b"placeholder-module\n")
-    (kernel / "manifest.json").write_text(json.dumps({
-        "kernel_release": RELEASE,
-        "source_commit": "352508459733d3e6d349ea5581a8dd2fd8bb4180",
-    }))
-    return kernel
+    return sealed_fixture(tmp / "kernel", RELEASE)
 
 
 def main():

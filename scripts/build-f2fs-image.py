@@ -28,6 +28,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from tree_metadata import compare
+
 MIB = 1024 * 1024
 REQUIRED_TOOLS = ("mkfs.f2fs", "fsck.f2fs", "tar", "zstd")
 
@@ -92,81 +94,37 @@ def import_via_mount(image, rootfs, work):
     run(["mount", "-o", "loop", image, mount])
     try:
         archive = work / "rootfs.tar.zst"
-        run(["tar", "--xattrs", "--acls", "--numeric-owner", "-I", "zstd -3 -T0",
+        run(["tar", "--format=pax", "--xattrs", "--xattrs-include=*", "--acls", "--selinux", "--numeric-owner", "-I", "zstd -3 -T0",
              "-cf", archive, "-C", rootfs, "."])
-        run(["tar", "--xattrs", "--acls", "--numeric-owner",
+        run(["tar", "--xattrs", "--xattrs-include=*", "--acls", "--selinux", "--numeric-owner", "--same-owner",
              "-I", "zstd -T0", "-xf", archive, "-C", mount])
     finally:
         run(["umount", mount])
 
 
 def verify(image, source_root, work):
-    """挂载镜像并逐项比对，返回核对统计。"""
+    """卸载后只读检查，再只读挂载核对完整内容与元数据。"""
+    before = sha256(image)
+    fsck = subprocess.run(["fsck.f2fs", "-f", "--dry-run", str(image)],
+                          capture_output=True, text=True, check=True)
+    checks = [line for line in fsck.stdout.splitlines()
+              if line.startswith("[FSCK]") and ("[Ok" in line or "[Fail" in line)]
+    if not checks or any("[Fail" in line for line in checks):
+        raise ImageError("fsck did not report successful consistency checks")
+    if sha256(image) != before:
+        raise ImageError("read-only fsck changed the image")
     mount = work / "verify"
     mount.mkdir()
-    run(["mount", "-o", "loop,ro", image, mount])
+    run(["mount", "-t", "f2fs", "-o", "loop,ro,norecovery", image, mount])
     try:
-        # 用 tar 的 --compare 语义：两边各自导出规范化的属性清单再比。
-        def inventory(base):
-            # 目录的 size 由文件系统自己决定（F2FS 与 ext4 不同，且随目录项数
-            # 变化），不参与比对。文件比对 type/uid/gid/mode/size。
-            out = capture([
-                "find", base, "-mindepth", "1", "-printf",
-                "%P\\t%y\\t%u\\t%g\\t%m\\t%y\\t%s\\n",
-            ])
-            rows = []
-            for line in out.decode().splitlines():
-                fields = line.split("\t")
-                name, kind, uid, gid, mode, size = fields[0], fields[1], fields[2], fields[3], fields[4], fields[6]
-                if kind == "d":
-                    rows.append(f"{name}\t{kind}\t{uid}\t{gid}\t{mode}")
-                else:
-                    rows.append(f"{name}\t{kind}\t{uid}\t{gid}\t{mode}\t{size}")
-            return rows
-
-        left = inventory(source_root)
-        right = inventory(mount)
-        if sorted(left) != sorted(right):
-            only_left = sorted(set(left) - set(right))[:5]
-            only_right = sorted(set(right) - set(left))[:5]
-            raise ImageError(
-                f"entry/attribute mismatch: only in source {only_left}, only in image {only_right}"
-            )
-
-        # 逐文件比对 xattr（含 ACL 与 security.capability）。
-        mismatch = []
-        for line in left:
-            name = line.split("\t", 1)[0]
-            src = source_root / name
-            dst = mount / name
-            try:
-                sx = sorted(os.listxattr(src, follow_symlinks=False))
-                dx = sorted(os.listxattr(dst, follow_symlinks=False))
-            except OSError:
-                continue
-            if sx != dx:
-                mismatch.append(f"{name}: xattr list {sx} != {dx}")
-                continue
-            for attr in sx:
-                a = os.getxattr(src, attr, follow_symlinks=False)
-                b = os.getxattr(dst, attr, follow_symlinks=False)
-                if a != b:
-                    mismatch.append(f"{name}: xattr {attr} differs")
-            if len(mismatch) > 5:
-                break
-        if mismatch:
-            raise ImageError("xattr mismatch: " + "; ".join(mismatch))
-
-        # 退出码 0 即通过。f2fs-tools 1.16.0 对干净镜像也会打印修复行。
-        fsck = capture(["fsck.f2fs", "-f", image])
-        return {
-            "entries": len(left),
-            "xattr_checked": True,
-            "fsck_exit": 0,
-            "fsck_tail": fsck.decode().strip().splitlines()[-2:],
-        }
+        metadata = compare(source_root, mount)
     finally:
         run(["umount", mount])
+    return {**metadata, "fsck_exit": fsck.returncode,
+            "fsck_read_only": True, "fsck_ran_unmounted": True,
+            "fsck_changed_image": False, "fsck_flags": ["-f", "--dry-run"],
+            "fsck_consistency_checks": len(checks),
+            "fsck_tail": fsck.stdout.strip().splitlines()[-10:]}
 
 
 def main(argv=None):
@@ -202,6 +160,7 @@ def main(argv=None):
             "output": str(target),
             "size_mib": args.size_mib,
             "label": args.label,
+            "format": "raw-f2fs",
             "f2fs_options": args.f2fs_option,
             "device_tested": False,
         }
@@ -221,7 +180,7 @@ def main(argv=None):
             Path(args.manifest).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
-    except ImageError as exc:
+    except (ImageError, ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:

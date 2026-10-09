@@ -1,6 +1,7 @@
 # 上游取源与构建产物
 /upstream/
 /build/
+/out/
 /local/
 
 # 固件与校准数据：许可不明

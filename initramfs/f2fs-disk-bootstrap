@@ -4,7 +4,7 @@
 # 与上游 linux/userspace/release-disk-bootstrap 同构，只改 F2FS 相关部分：
 #   - 类型检查 ext4 -> f2fs
 #   - 只读挂载去掉 ext4 专有的 noload（F2FS 没有这个选项，传了会挂载失败）
-#   - 首次只读检查后不再"重新挂载"，因为 F2FS 的只读挂载不涉及日志回放语义
+#   - 首次检查用 ro,norecovery，卸载后重新以 rw 正常恢复并挂载
 #
 # 保留的结构：两次身份校验、先只读后读写、失败进救援而不回退到 Android。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin
@@ -120,8 +120,9 @@ verify_device() {
 }
 verify_device || fail 'LABEL/PARTNAME/TYPE mismatch'
 # 只读检查：确认这是一套真实系统，且模块与内核匹配。
-# F2FS 没有 ext4 的 noload；它的只读挂载本身就不回放日志。
-mount -t f2fs -o ro "$rootdev" /sysroot || fail 'Read-only Linux mount failed'
+# norecovery 明确禁止 roll-forward；仅有 ro 不替代禁止恢复的保证。
+# 来源：Linux Documentation/filesystems/f2fs.rst 的 mount options。
+mount -t f2fs -o ro,norecovery "$rootdev" /sysroot || fail 'Read-only Linux mount failed'
 [ -x /sysroot/usr/lib/systemd/systemd ] || fail 'Real systemd is missing'
 [ -d "/sysroot/usr/lib/modules/$release" ] || fail 'Matching distro modules are missing'
 [ ! -f /sysroot/etc/initrd-release ] || fail 'Root is initrd-only'

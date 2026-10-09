@@ -30,6 +30,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from piano_artifacts import inspect_kernel
+
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "initramfs" / "f2fs-disk-bootstrap"
 
@@ -40,7 +42,7 @@ MIB = 1024 * 1024
 APPLETS = (
     "sh", "cat", "mkdir", "mount", "mountpoint", "chmod", "uname", "chroot",
     "switch_root", "sleep", "insmod", "umount", "grep", "tr", "id", "awk",
-    "readlink", "rm", "rmdir", "ln",
+    "readlink", "rm", "rmdir", "ln", "ip", "reboot",
 )
 
 # 早期硬件准备需要按序加载的模块，与上游 disk bootstrap 的种子一致。
@@ -113,7 +115,9 @@ def resolve_library(root, soname):
     for directory in FEDORA_LIBDIRS:
         candidate = guest_resolve(root, f"{directory}/{soname}")
         if candidate.is_file():
-            return candidate
+            # 归档目标保留 loader 实际搜索的 guest 名称；不能把 /lib64
+            # 展开成 /usr/lib64 后省略 /lib64 链接，让 loader 找不到库。
+            return f"{directory}/{soname}"
     raise InitramfsError(f"missing shared library: {soname}")
 
 
@@ -135,8 +139,7 @@ def runtime_files(root, programs):
         for soname in needed:
             if "/" in soname:
                 raise InitramfsError(f"unexpected ELF dependency path: {soname}")
-            resolved = resolve_library(root, soname)
-            pending.append("/" + str(resolved.relative_to(Path(root).resolve())))
+            pending.append(resolve_library(root, soname))
     return files
 
 
@@ -266,8 +269,12 @@ def build(rootfs, kernel, output, root_label, root_partname, release_override=No
     manifest_path = kernel / "manifest.json"
     if not manifest_path.is_file():
         raise InitramfsError(f"kernel manifest missing: {manifest_path}")
-    kernel_manifest = json.loads(manifest_path.read_text())
+    kernel_manifest, kernel_hash = inspect_kernel(kernel)
     release = release_override or kernel_manifest["kernel_release"]
+    if release != kernel_manifest["kernel_release"]:
+        raise InitramfsError("release override differs from sealed kernel")
+    if (root_label, root_partname) != ("PIANOROOT", "sunuefi_root"):
+        raise InitramfsError("only the dedicated piano root identity is supported")
     if not re.fullmatch(r"[A-Za-z0-9_.+-]{1,128}", release):
         raise InitramfsError(f"invalid kernel release: {release!r}")
 
@@ -310,12 +317,17 @@ def build(rootfs, kernel, output, root_label, root_partname, release_override=No
     rows["bin/busybox"] = busybox
     rows["pianoinit"] = BOOTSTRAP
     rows["init"] = BOOTSTRAP
+    rescue = guest_resolve(rootfs, "/usr/local/sbin/piano-debug-bootstrap")
+    if not rescue.is_file():
+        raise InitramfsError("stage the piano USB rescue helper into rootfs first")
+    rows["usr/local/sbin/piano-debug-bootstrap"] = rescue
     rows[f"lib/modules/{release}/modules.builtin"] = module_dir / "modules.builtin"
 
     generated = {
         "etc/piano/root-label": root_label + "\n",
         "etc/piano/root-partname": root_partname + "\n",
         "etc/piano/kernel-release": release + "\n",
+        "etc/piano/linux-debug.conf": "usb=acm-ncm\nshell=1\nrecovery_seconds=0\n",
         "etc/piano/modules-load-order": "".join(
             f"{module_name(path)} /lib/modules/{release}/{path}\n" for path in ordered
         ),
@@ -374,6 +386,7 @@ def build(rootfs, kernel, output, root_label, root_partname, release_override=No
         "status": "INITRAMFS_BUILT_NOT_BOOT_VERIFIED",
         "kernel_release": release,
         "kernel_commit": kernel_manifest.get("source_commit"),
+        "kernel_manifest_sha256": kernel_hash,
         "root_policy": f"LABEL={root_label}",
         "root_partname": root_partname,
         "root_fstype": "f2fs",
@@ -411,7 +424,7 @@ def main(argv=None):
                        args.root_label, args.root_partname, args.release)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
-    except InitramfsError as exc:
+    except (InitramfsError, ValueError, OSError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:

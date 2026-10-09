@@ -29,6 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from piano_artifacts import inspect_kernel, safe_destination
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # 与 SunUEFI tools/stage_piano_ram_hardware.py 里登记的摘要一致。
@@ -72,7 +74,7 @@ def load_kernel(kernel):
     manifest = kernel / "manifest.json"
     if not manifest.is_file():
         raise StageError(f"missing kernel manifest: {manifest}")
-    record = json.loads(manifest.read_text())
+    record, _ = inspect_kernel(kernel)
     release = record.get("kernel_release")
     if not isinstance(release, str) or not re.fullmatch(r"[A-Za-z0-9_.+-]{1,128}", release):
         raise StageError(f"invalid kernel release: {release!r}")
@@ -107,7 +109,14 @@ def stage_hardware(rootfs, sunuefi):
     sources = {
         "usr/lib/piano/piano_dma_routes.py": (sunuefi / CHECKER, CHECKER_SHA256),
         "usr/lib/piano/piano_dma_contexts.py": (sunuefi / CONTEXT_CHECKER, CONTEXT_CHECKER_SHA256),
-        "usr/lib/piano/piano-ram-hardware-prepare": (sunuefi / HARDWARE_PREPARE, None),
+        "usr/lib/piano/piano-ram-hardware-prepare": (
+            sunuefi / HARDWARE_PREPARE,
+            "a171ece910b51b7a9586c58277df78957709a4fff559245c9919d3f8432c925c"),
+        "usr/local/sbin/piano-debug-bootstrap": (
+            sunuefi / "linux/userspace/piano-debug-bootstrap",
+            "d201ec73a70f3db8d80a9e424fe88ec4de90a31bf2cba49d1229970ea49427ba"),
+        "usr/lib/piano/piano-boot-task-snapshot": (
+            sunuefi / "linux/userspace/piano-boot-task-snapshot", None),
     }
     staged = {}
     for relative, (source, expected) in sources.items():
@@ -145,6 +154,8 @@ def stage(rootfs, kernel, sunuefi):
     if not (sunuefi / "build.sh").is_file():
         raise StageError(f"not a SunUEFI checkout: {sunuefi}")
 
+    safe_destination(rootfs, "usr/lib/modules")
+
     record, release, modules = load_kernel(kernel)
     destination = stage_modules(rootfs, kernel, release, modules)
     staged = stage_hardware(rootfs, sunuefi)
@@ -161,6 +172,8 @@ def stage(rootfs, kernel, sunuefi):
     provenance.write_text(json.dumps({
         "kernel_release": release,
         "kernel_commit": record.get("source_commit"),
+        "kernel_manifest_sha256": sha256(kernel / "manifest.json"),
+        "kernel_config_sha256": record["config_sha256"],
         "module_count": len(module_files),
         "hardware_prepare": staged,
         "device_tested": False,
@@ -196,7 +209,7 @@ def main(argv=None):
             )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
-    except StageError as exc:
+    except (StageError, ValueError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except (OSError, shutil.Error) as exc:

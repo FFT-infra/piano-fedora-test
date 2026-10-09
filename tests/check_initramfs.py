@@ -15,6 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from kernel_fixture import make_kernel
+
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "scripts" / "build-initramfs.py"
 BOOTSTRAP = ROOT / "initramfs" / "f2fs-disk-bootstrap"
@@ -49,8 +51,10 @@ def static_aarch64_busybox():
 def build_fixture(tmp, busybox):
     rootfs = tmp / "rootfs"
     (rootfs / "usr" / "bin").mkdir(parents=True)
-    (rootfs / "lib64").mkdir()
-    (rootfs / "lib").mkdir()
+    (rootfs / "usr/lib64").mkdir()
+    (rootfs / "usr/lib").mkdir()
+    (rootfs / "lib64").symlink_to("usr/lib64")
+    (rootfs / "lib").symlink_to("usr/lib")
     shutil.copy2(busybox, rootfs / "usr" / "bin" / "busybox")
     # blkid 走动态链接；本机没有时跳过依赖闭包部分。
     blkid = shutil.which("blkid")
@@ -66,6 +70,10 @@ def build_fixture(tmp, busybox):
         if loader.exists():
             shutil.copy2(loader, rootfs / "lib" / "ld-linux-aarch64.so.1")
 
+    rescue = rootfs / "usr/local/sbin/piano-debug-bootstrap"
+    rescue.parent.mkdir(parents=True)
+    rescue.write_text("#!/bin/sh\nexit 0\n")
+    rescue.chmod(0o755)
     kernel = tmp / "kernel"
     modules = kernel / "modules" / "lib" / "modules" / RELEASE
     (modules / "kernel" / "drivers" / "iommu").mkdir(parents=True)
@@ -95,6 +103,8 @@ def build_fixture(tmp, busybox):
         "kernel_release": RELEASE,
         "source_commit": "352508459733d3e6d349ea5581a8dd2fd8bb4180",
     }))
+    # 覆盖前面的占位 metadata 为可验证的封存格式，字节仍明确是测试 fixture。
+    make_kernel(kernel, RELEASE)
     return rootfs, kernel
 
 
@@ -212,6 +222,8 @@ def main():
             # 动态依赖必须一起进归档。
             if shutil.which("blkid"):
                 check("usr/bin/blkid" in records, "blkid missing from initramfs")
+                check("lib64/libblkid.so.1" in records,
+                      "loader must find libblkid at /lib64 even with a merged-usr root")
                 check(any(name.startswith("lib64/") or name.startswith("lib/")
                           for name in records),
                       "ELF dependency closure missing")
