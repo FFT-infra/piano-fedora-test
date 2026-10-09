@@ -138,6 +138,12 @@ def build(args):
     flags = [compiler, "-O2", "-Wall", "-Wextra", "-Werror"]
     touch, touch_proof = runtime.derive_touch_source(public, build)
     camera, camera_proof = runtime.derive_camerad_source(public, build)
+    if camera_proof['effective_source_sha256'] != '1b5f1eee73d4cad6d91791c4d384b53f15b96518d15d75b2e446f02309982eb2':
+        raise ValueError('camera adapter input changed; review the GCC patch')
+    gcc_patch = Path(__file__).resolve().parents[1] / 'patches/runtime/camerad-gcc-bounds.patch'
+    run(['patch', '--batch', '--forward', '--fuzz=0', '-p1', '-i', gcc_patch], cwd=camera.parent.parent)
+    camera_proof['fedora_patch_sha256'] = sha256(gcc_patch)
+    camera_proof['fedora_effective_source_sha256'] = sha256(camera)
     pen_files, pen_proof = runtime.build_pen_core(build, flags)
     helpers = dict(pen_files)
     for name, (relative, pin, destination) in (runtime.PUBLIC_SOURCES | runtime.BSP_SOURCES).items():

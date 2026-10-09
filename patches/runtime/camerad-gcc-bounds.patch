@@ -1,0 +1,31 @@
+diff --git a/camera/piano-camerad.c b/camera/piano-camerad.c
+index 46b8f87..0776d2d 100644
+--- a/camera/piano-camerad.c
++++ b/camera/piano-camerad.c
+@@ -272,8 +272,13 @@ static int topo_open_devnode(const struct topo *tp, uint32_t entity_id)
+ 			while (fgets(line, sizeof(line), f))
+ 				if (!strncmp(line, "DEVNAME=", 8)) {
+ 					line[strcspn(line, "\n")] = '\0';
+-					snprintf(dev, sizeof(dev), "/dev/%s",
+-						 line + 8);
++					size_t name_bytes = strlen(line + 8);
++					if (name_bytes >= sizeof(dev) - 5) {
++						fclose(f);
++						return -1;
++					}
++					memcpy(dev, "/dev/", 5);
++					memcpy(dev + 5, line + 8, name_bytes + 1);
+ 				}
+ 			fclose(f);
+ 			if (!dev[0])
+@@ -451,8 +456,9 @@ static void loopback_uevent(int fd)
+ 	ufd = open(path, O_WRONLY | O_CLOEXEC);
+ 	if (ufd < 0)
+ 		return;
+-	if (write(ufd, "change", 6) < 0)
+-		;
++	if (write(ufd, "change", 6) < 0) {
++		/* Best-effort notification; the existing device remains usable. */
++	}
+ 	close(ufd);
+ }
