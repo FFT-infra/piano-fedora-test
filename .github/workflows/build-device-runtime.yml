@@ -1,0 +1,115 @@
+name: build-device-runtime
+
+# 原生 Fedora 编译用户态；外部模块使用同一次内核的配置和 Module.symvers。
+# 固件、校准输入和生成文件只放 build/，不提交到代码仓库。
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_run_id:
+        description: "同时产出 kernel 与 SDK 的成功 run；留空解析最新完整 run"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the builder tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman zstd kmod clang lld llvm make \
+            bison flex bc libelf-dev libssl-dev rsync python3 git
+
+      - name: Resolve the complete kernel run
+        id: kernel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KERNEL_RUN: ${{ inputs.kernel_run_id }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$KERNEL_RUN" ]; then args+=(--run-id "$KERNEL_RUN"); fi
+          python3 scripts/resolve-artifact-run.py --workflow build-kernel.yml \
+            --artifact kernel-release-7.2.9 --artifact kernel-sdk-7.2.9 "${args[@]}"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-release-7.2.9
+          path: build/in/kernel
+          run-id: ${{ steps.kernel.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-sdk-7.2.9
+          path: build/in/sdk
+          run-id: ${{ steps.kernel.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch and verify the locked device sources
+        run: |
+          set -euo pipefail
+          python3 scripts/checkout-sources.py --output build/sources --mode device --kernel
+          tar -I zstd -xf build/in/kernel/kernel-release-7.2.9.tar.zst -C build/in/kernel
+
+      - name: Compile the matching external module
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-runtime-kernel.py --sunuefi build/sources/sunuefi \
+            --kernel build/in/kernel --sdk build/in/sdk --output build/kernel-runtime
+
+      - name: Compile and package the Fedora runtime
+        run: |
+          set -euo pipefail
+          release=$(python3 -c 'import json;print(json.load(open("product.json"))["target"]["releasever"])')
+          sudo podman run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
+              dnf -y install gcc gcc-c++ glibc-static libstdc++-static make \
+                binutils llvm rpm-build python3 python3-devel zstd tar git patch \
+                busybox alsa-topology-utils m4 meson ninja-build pkgconf-pkg-config \
+                glib2-devel libqmi-devel libmbim-devel protobuf-c-devel \
+                protobuf-c-compiler protobuf-compiler gobject-introspection-devel \
+                vala gtk-doc systemd-devel libgudev-devel polkit-devel
+              git config --global --add safe.directory /workspace/build/sources/sunuefi/upstream/debian-piano-current
+              python3 scripts/build-device-runtime.py --sunuefi build/sources/sunuefi \
+                --kernel build/in/kernel --uapi build/kernel-runtime/uapi \
+                --loopback build/kernel-runtime/v4l2loopback/v4l2loopback.ko \
+                --output build/device-runtime
+            '
+          sudo chown -R "$(id -u):$(id -g)" build/device-runtime
+
+      - name: Package the runtime and ABI proof
+        run: |
+          set -euo pipefail
+          cp build/kernel-runtime/manifest.json build/device-runtime/kernel-abi.json
+          tar -I 'zstd -6 -T0' -cf piano-fedora-runtime.tar.zst \
+            -C build/device-runtime manifest.json kernel-abi.json rpms
+          cat build/device-runtime/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: piano-fedora-runtime
+          path: piano-fedora-runtime.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Preserve failed build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-runtime-diagnostics
+          path: |
+            build/device-runtime/**/*.log
+            build/device-runtime/**/*.spec
+            build/device-runtime/**/meson-info/*.json
+          if-no-files-found: warn
+          retention-days: 7
