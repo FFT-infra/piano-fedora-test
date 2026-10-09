@@ -20,7 +20,7 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 1. Fedora 后端。给上游加 dnf5 路径，产出 Fedora rootfs 树。参考 [fedora-sheng](https://github.com/mumuxiao722/fedora-sheng) 的 RPM spec 与 Actions 参数化，不迁移它的 SM8550 硬件内容与 mkbootimg 启动链。
 2. F2FS 全链路。涉及六处 ext4 硬编码：内核配置策略、`release-disk-bootstrap`、fstab、udev 放行、`package_release.py` 的镜像制作、安装器 magic 与 SSH 注入。
 
-   制镜像不用 `sload -P`。上游 f2fs-tools 的 sload 只保留 owner/mode，不枚举源树的 xattr/ACL/capability，用它会在导入阶段静默丢元数据。改为挂载真实 F2FS 后用 `tar --xattrs --acls --numeric-owner` 写入，再挂载读回逐项比对。已在 192.168.5.11 上验证：setuid 位与 user xattr 都能往返保留。
+   制镜像不用 `sload -P`。上游 f2fs-tools 的 sload 只保留 owner/mode，不枚举源树的 xattr/ACL/capability，用它会在导入阶段静默丢元数据。改为挂载真实 F2FS 后用 `tar --xattrs --acls --numeric-owner` 写入，再挂载读回逐项比对。`build-image.yml` 在 CI 上跑这条验证。
 3. 首次分区。只读探测本机并生成计划，用模拟 GPT 在主机上验证。
 4. 安装与验收。实际写入，启动验证，双向切换。
 

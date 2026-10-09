@@ -1,0 +1,65 @@
+name: build-image
+
+# 从已构建的 rootfs 制作 F2FS 镜像并读回核对。不接触设备。
+on:
+  workflow_dispatch:
+    inputs:
+      rootfs_artifact:
+        description: "rootfs artifact 名称，例如 rootfs-44-gnome"
+        required: true
+        default: "rootfs-44-gnome"
+      size_mib:
+        description: "镜像容量（MiB）"
+        required: false
+        default: "8192"
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install f2fs-tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq f2fs-tools attr
+
+      - name: Download rootfs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.rootfs_artifact }}
+          path: incoming
+
+      - name: Unpack rootfs
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          tar -I zstd -xf incoming/*.tar.zst -C work
+          test -d work/rootfs
+          du -sh work/rootfs
+
+      - name: Build F2FS image and verify
+        run: |
+          set -euo pipefail
+          sudo python3 scripts/build-f2fs-image.py \
+            --rootfs work/rootfs \
+            --size-mib "${{ inputs.size_mib }}" \
+            --output "pianoroot-${{ inputs.size_mib }}.f2fs.img" \
+            --verify \
+            --manifest image-manifest.json
+
+      - name: Show manifest
+        run: cat image-manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f2fs-image-${{ inputs.size_mib }}
+          path: |
+            pianoroot-*.f2fs.img
+            image-manifest.json
+          retention-days: 14
