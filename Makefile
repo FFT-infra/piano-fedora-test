@@ -8,6 +8,7 @@ test:
 	python3 tests/check_f2fs_image.py
 	python3 tests/check_first_partition.py
 	python3 tests/check_esp_image.py
+	python3 tests/check_patches.py
 
 RELEASEVER ?= 44
 plan:

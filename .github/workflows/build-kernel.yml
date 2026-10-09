@@ -68,6 +68,13 @@ jobs:
           git -C sunuefi/upstream/linux-piano checkout "${{ steps.pins.outputs.kernel_commit }}"
           echo "kernel at $(git -C sunuefi/upstream/linux-piano rev-parse HEAD)"
 
+      - name: Apply project patches to SunUEFI
+        run: |
+          set -euo pipefail
+          # 上游按 commit 锁定，改动走本仓库补丁。补丁自带目标文件摘要，
+          # 上游一变就报错退出，不静默套用一个上下文已变的补丁。
+          python3 scripts/apply-patches.py --sunuefi sunuefi
+
       - name: Prepare release kernel
         working-directory: sunuefi
         run: python3 tools/prepare_release_kernel.py --refresh

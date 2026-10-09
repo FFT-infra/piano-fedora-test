@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "target": "sunuefi",
+  "note": "按顺序应用。每个补丁的 target_sha256 是应用前该文件必须匹配的摘要；上游更新后不匹配会报错退出，不静默跳过。",
+  "base": {
+    "sunuefi_commit": "ce5ee2926ec62c7b51e13065ebeafd98835c5e79"
+  },
+  "patches": [
+    {
+      "file": "0001-add-f2fs-root-support.patch",
+      "summary": "新增 F2FS 配置片段，登记为可审阅覆盖，并把 F2FS_FS 加进最终配置校验",
+      "targets": {
+        "tools/build_piano_full_kernel.py": "8cbbc43e20775a7aa417a6de85aa676d3c8f7bb3b46805fd39ed687542e36c39"
+      },
+      "creates": [
+        "linux/configs/piano-f2fs.config"
+      ]
+    }
+  ]
+}

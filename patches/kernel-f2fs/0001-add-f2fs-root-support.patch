@@ -1,0 +1,123 @@
+From 444dd5078e00fda80231f772aa06493b9aca28c1 Mon Sep 17 00:00:00 2001
+From: piano-fedora-test <dev@piano.invalid>
+Date: Sat, 10 Oct 2026 01:42:03 +0800
+Subject: [PATCH] kernel: add F2FS root support to the full candidate
+
+The Fedora dual-boot image mounts an F2FS root partition. The full candidate
+build only accepts reviewed configuration overrides, so F2FS is registered the
+same way as flash and early-CPUCP: one fragment with an exactly pinned key set.
+
+CONFIG_F2FS_FS is built in rather than a module because the root filesystem is
+mounted from the initramfs; a module would make that mount depend on module
+load order for the filesystem being mounted.
+
+XATTR, POSIX_ACL and SECURITY match what 'tar --xattrs --acls' writes at image
+build time. Dropping any of them loses capabilities or ACLs from the rootfs.
+
+The fragment joins the build-time drift check so a later edit cannot change the
+effective configuration without being detected.
+
+Options mirror sheng's sm8550.config, the reference for this project.
+---
+ .gitignore                       |  2 ++
+ linux/configs/piano-f2fs.config  | 15 +++++++++++++++
+ tools/build_piano_full_kernel.py | 21 +++++++++++++++------
+ 3 files changed, 32 insertions(+), 6 deletions(-)
+ create mode 100644 .gitignore
+ create mode 100644 linux/configs/piano-f2fs.config
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..7a60b85
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++__pycache__/
++*.pyc
+diff --git a/linux/configs/piano-f2fs.config b/linux/configs/piano-f2fs.config
+new file mode 100644
+index 0000000..c67b580
+--- /dev/null
++++ b/linux/configs/piano-f2fs.config
+@@ -0,0 +1,15 @@
++# F2FS root support for the Fedora dual-boot image.
++#
++# Built in, not a module: the root filesystem is mounted from the initramfs,
++# and a module would make that mount depend on module load order for the very
++# filesystem being mounted.
++CONFIG_F2FS_FS=y
++# XATTR/ACL/SECURITY are what `tar --xattrs --acls` writes at image build time.
++# Dropping any of them silently loses capabilities or ACLs from the rootfs.
++CONFIG_F2FS_FS_XATTR=y
++CONFIG_F2FS_FS_POSIX_ACL=y
++CONFIG_F2FS_FS_SECURITY=y
++# Runtime consistency checking and compression stay off: fsck runs at image
++# build time, and compression changes the on-disk format features.
++# CONFIG_F2FS_CHECK_FS is not set
++# CONFIG_F2FS_FS_COMPRESSION is not set
+diff --git a/tools/build_piano_full_kernel.py b/tools/build_piano_full_kernel.py
+index 22c8424..3009a1c 100644
+--- a/tools/build_piano_full_kernel.py
++++ b/tools/build_piano_full_kernel.py
+@@ -35,7 +35,7 @@ REQUIRED={
+  'BATTERY_PIANO_MCA':'m','CHARGER_SC8541':'m','QCOM_PMIC_GLINK':'m',
+  'TOUCHSCREEN_NT36532E_SPI':'m','INPUT_EVDEV':'y','INPUT_UINPUT':'m','HID_NANOSIC_WN8030':'m',
+  'ATH12K':'m','BT':'m','BT_HCIUART':'m','BT_HCIUART_QCA':'y',
+- 'EXT4_FS':'y','SCSI_UFSHCD':'m','SCSI_UFS_QCOM':'m','PHY_QCOM_QMP_UFS':'m','SCSI_UFS_CRYPTO':'n',
++ 'EXT4_FS':'y','F2FS_FS':'y','SCSI_UFSHCD':'m','SCSI_UFS_QCOM':'m','PHY_QCOM_QMP_UFS':'m','SCSI_UFS_CRYPTO':'n',
+  'USB_CONFIGFS_NCM':'y','DEVTMPFS':'y','DEVTMPFS_MOUNT':'y','UNIX':'y','TMPFS':'y',
+  'CGROUPS':'y','INOTIFY_USER':'y','FHANDLE':'y','SECCOMP':'y','SECCOMP_FILTER':'y','ZRAM':'y','BINFMT_MISC':'y',
+  'TMPFS_POSIX_ACL':'y','TMPFS_XATTR':'y','SECURITY':'y',
+@@ -45,7 +45,12 @@ FLASH_OVERRIDES={
+  'CONFIG_V4L2_FLASH_LED_CLASS':'m','CONFIG_VIDEO_V4L2_SUBDEV_API':'y',
+ }
+ EARLY_CPUCP_OVERRIDES={'CONFIG_QCOM_CPUCP_MBOX':'y'}
+-ALLOWED_OVERRIDES={'CONFIG_UHID':'m',**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES}
++# Fedora dual-boot mounts an F2FS root partition. The fragment is reviewed
++# the same way as flash/early-CPUCP: the exact key set is pinned here, so
++# the file cannot drift into an unreviewed override.
++F2FS_OVERRIDES={'CONFIG_F2FS_FS':'y','CONFIG_F2FS_FS_XATTR':'y',
++                'CONFIG_F2FS_FS_POSIX_ACL':'y','CONFIG_F2FS_FS_SECURITY':'y'}
++ALLOWED_OVERRIDES={'CONFIG_UHID':'m',**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES}
+ 
+ 
+ def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
+@@ -80,13 +85,15 @@ def command_line(fragment,public,root_policy):
+ 
+ def module_overrides(fragment,kind='bluetooth'):
+     lines=[line.strip()for line in fragment.splitlines()if line.strip()and not line.lstrip().startswith('#')]
+-    expected={'CONFIG_UHID':'m'}if kind=='bluetooth'else FLASH_OVERRIDES if kind=='flash'else EARLY_CPUCP_OVERRIDES if kind=='early-cpucp'else None
++    expected=({'CONFIG_UHID':'m'}if kind=='bluetooth'else FLASH_OVERRIDES if kind=='flash'
++              else EARLY_CPUCP_OVERRIDES if kind=='early-cpucp'
++              else F2FS_OVERRIDES if kind=='f2fs'else None)
+     if expected is None or lines!=[key+'='+value for key,value in expected.items()]:raise ValueError('Unexpected '+kind+' configuration fragment')
+     return dict(expected)
+ 
+ 
+ def validate_module_overrides(values):
+-    if any(key not in ALLOWED_OVERRIDES or value!=ALLOWED_OVERRIDES[key]for key,value in values.items()):raise ValueError('Only reviewed Bluetooth/flash/early-CPUCP configuration overrides are supported')
++    if any(key not in ALLOWED_OVERRIDES or value!=ALLOWED_OVERRIDES[key]for key,value in values.items()):raise ValueError('Only reviewed Bluetooth/flash/early-CPUCP/F2FS configuration overrides are supported')
+     flash=set(values)&set(FLASH_OVERRIDES)
+     if flash and flash!=set(FLASH_OVERRIDES):raise ValueError('Flash requires all four reviewed options')
+     return values
+@@ -205,8 +212,10 @@ def main():
+     root_command=command_line(fragment.read_text(),public.read_text(),args.root)
+     bluetooth=ROOT/'linux/configs/piano-bluetooth.config';flash=ROOT/'linux/configs/piano-flash.config'
+     early_cpucp=ROOT/'linux/configs/piano-cpucp-early.config'
++    f2fs=ROOT/'linux/configs/piano-f2fs.config'
+     modules={**module_overrides(bluetooth.read_text()),**module_overrides(flash.read_text(),'flash'),
+-             **module_overrides(early_cpucp.read_text(),'early-cpucp')}
++             **module_overrides(early_cpucp.read_text(),'early-cpucp'),
++             **module_overrides(f2fs.read_text(),'f2fs')}
+     env,tools=toolchain();out.mkdir(parents=True,exist_ok=True);artifacts.mkdir(parents=True,exist_ok=True)
+     build_locks=[]
+     lock_root=ROOT/'build/locks';lock_root.mkdir(parents=True,exist_ok=True)
+@@ -224,7 +233,7 @@ def main():
+     verify_source(work,commit)
+     tree=text(['git','rev-parse','HEAD^{tree}'],work)
+     compiler_checkout(work,compiler,commit,tree)
+-    hashes={str(path.relative_to(ROOT)):sha(path)for path in (fragment,bluetooth,flash,early_cpucp,Path(__file__),ROOT/'tools/build_kernel.py',ROOT/'tools/prepare_linux_modules.py')}
++    hashes={str(path.relative_to(ROOT)):sha(path)for path in (fragment,bluetooth,flash,early_cpucp,f2fs,Path(__file__),ROOT/'tools/build_kernel.py',ROOT/'tools/prepare_linux_modules.py')}
+     effective_text=effective_config(root_command,modules)
+     effective=out/'piano-full.effective.config';effective.write_text(effective_text)
+     command=['make','-C',compiler,'O='+str(out),'ARCH=arm64','LLVM=1','LLVM_IAS=1']
