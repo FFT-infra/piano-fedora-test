@@ -1,0 +1,35 @@
+{
+  "gnome": {
+    "dnf_packages": [
+      "@workstation-product-environment",
+      "gnome-shell",
+      "gnome-session",
+      "gdm",
+      "nautilus",
+      "gnome-control-center",
+      "dconf",
+      "pipewire",
+      "wireplumber",
+      "iio-sensor-proxy"
+    ],
+    "display_manager": "gdm"
+  },
+  "kde": {
+    "dnf_packages": [
+      "@kde-desktop-environment",
+      "plasma-desktop",
+      "plasma-workspace",
+      "sddm",
+      "dolphin",
+      "konsole",
+      "pipewire",
+      "wireplumber",
+      "iio-sensor-proxy"
+    ],
+    "display_manager": "sddm"
+  },
+  "server": {
+    "dnf_packages": [],
+    "display_manager": null
+  }
+}

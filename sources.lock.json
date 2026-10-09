@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "checked_date": "2026-10-09",
+  "note": "只列实际消费的上游。研究用的 75 个仓库不在此列。",
+  "sources": {
+    "sunuefi": {
+      "url": "https://github.com/slwyts/Project-SunUEFI.git",
+      "ref": "main",
+      "commit": "ce5ee2926ec62c7b51e13065ebeafd98835c5e79",
+      "role": "启动整合：UEFI、内核编排、rootfs 组装、打包、安装器"
+    },
+    "linux-piano": {
+      "url": "https://github.com/blu-sharky/linux-piano.git",
+      "ref": "piano-7.2.6",
+      "commit": "352508459733d3e6d349ea5581a8dd2fd8bb4180",
+      "role": "内核基线。SunUEFI 的完整 Stable 公开基线，非分支 HEAD"
+    },
+    "piano-firmware": {
+      "url": "https://github.com/blu-sharky/piano-firmware.git",
+      "ref": "main",
+      "commit": "05fc37c09ca8146eecfc4920f8485479db140ae5",
+      "role": "设备固件。许可不明，构建时取用，不入库"
+    },
+    "piano-mesa": {
+      "url": "https://github.com/blu-sharky/piano-mesa.git",
+      "ref": "main",
+      "commit": "a89c1e46eef3e161520b084479928aaa5a8e8732",
+      "role": "Adreno 830 用户态 Mesa 补丁"
+    },
+    "piano-sensors": {
+      "url": "https://github.com/blu-sharky/piano-sensors.git",
+      "ref": "main",
+      "commit": "65a92202db65ad13493b43fbf15d6abb3b7bcf92",
+      "role": "传感器用户态栈"
+    },
+    "piano-mipps-auth": {
+      "url": "https://github.com/blu-sharky/piano-mipps-auth.git",
+      "ref": "main",
+      "commit": "ccdc3ce7f5200ef736d7d552eb7b387ea3bb6fd9",
+      "role": "MiPPS 充电认证。SunUEFI 构建链依赖"
+    },
+    "debian-piano": {
+      "url": "https://github.com/blu-sharky/debian-piano.git",
+      "ref": "main",
+      "commit": "a75f8c5d5fa099d65c171ac839c2e3bb6c63ec45",
+      "role": "Debian rootfs 与 boot 打包，作对照参考"
+    },
+    "fedora-sheng": {
+      "url": "https://github.com/mumuxiao722/fedora-sheng.git",
+      "ref": "main",
+      "commit": "3bd197feb71f1d38b4ee7544fe3d5ee47c000cb4",
+      "role": "Fedora 后端参考（sheng/SM8550，GPL-3.0）。提供 RPM spec、Actions 参数化、dual(linux) 分区模式。硬件与启动链不可复用"
+    }
+  }
+}

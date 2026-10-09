@@ -1,0 +1,32 @@
+{
+  "id": "fedora",
+  "backend": "dnf-installroot",
+  "arch": "aarch64",
+  "container_image": "registry.fedoraproject.org/fedora",
+  "base_packages": [
+    "@core",
+    "systemd",
+    "systemd-sysv",
+    "sudo",
+    "curl",
+    "dbus",
+    "ca-certificates",
+    "NetworkManager",
+    "NetworkManager-wifi",
+    "NetworkManager-tui",
+    "openssh-server",
+    "openssh-clients",
+    "wpa_supplicant",
+    "iw",
+    "kmod",
+    "util-linux",
+    "polkit",
+    "cracklib-dicts",
+    "lm_sensors"
+  ],
+  "dnf_options": [
+    "--use-host-config",
+    "--setopt=install_weak_deps=False",
+    "--setopt=tsflags=nodocs"
+  ]
+}

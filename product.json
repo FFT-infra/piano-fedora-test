@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "device": {
+    "codename": "piano",
+    "model": "25091RP04C",
+    "soc": "SM8750",
+    "market_name": "Xiaomi Pad 8 Pro"
+  },
+  "target": {
+    "distro": "fedora",
+    "releasever": null,
+    "desktop": "gnome",
+    "arch": "aarch64",
+    "rootfs": "f2fs",
+    "boot": "sunuefi",
+    "root_label": "PIANOROOT",
+    "esp_label": "SUNUEFI_ESP",
+    "esp_size_mib": 512,
+    "root_size_mib": null
+  },
+  "note": "releasever 与 root_size_mib 为 null 是刻意的：前者决定包版本与 SELinux 元数据，后者决定分区方案，都不猜。工具遇到 null 会报错并指出该填哪个字段。"
+}

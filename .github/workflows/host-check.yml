@@ -1,0 +1,30 @@
+name: host-check
+
+# 只做主机侧检查，不构建镜像，不接触设备。
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make test
+      - name: Verify no device-write commands in workflows
+        run: |
+          set -euo pipefail
+          if grep -rniE 'fastboot (flash|erase)|adb (push|shell .*dd)|dd if=.*of=/dev/block' \
+               .github/workflows/ --exclude=host-check.yml; then
+            echo "FAIL: workflow contains device-write commands" >&2
+            exit 1
+          fi
+          echo "OK: no device-write commands"

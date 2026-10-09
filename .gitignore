@@ -1,0 +1,20 @@
+# 上游取源与构建产物
+/upstream/
+/build/
+/local/
+
+# 固件与校准数据：许可不明
+*.img
+*.img.gz
+*.img.zst
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*~
+*.swp
