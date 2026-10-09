@@ -5,6 +5,7 @@ test:
 	python3 tests/check_product.py
 	python3 tests/check_links.py
 	python3 tests/check_rootfs_plan.py
+	python3 tests/check_f2fs_image.py
 
 RELEASEVER ?= 44
 plan:
