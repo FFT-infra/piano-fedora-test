@@ -22,7 +22,9 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 
    制镜像不用 `sload -P`。上游 f2fs-tools 的 sload 只保留 owner/mode，不枚举源树的 xattr/ACL/capability，用它会在导入阶段静默丢元数据。改为挂载真实 F2FS 后用 `tar --xattrs --acls --numeric-owner` 写入，再挂载读回逐项比对。
 
-   CI 只跑小 fixture 的往返验证（`verify-f2fs.yml`），确认 setuid、xattr、软硬链接能保留。完整 rootfs 约 5 GB，做出的部署镜像达 GB 级，不适合走 GitHub：真正的镜像在本地或自托管环境生成。
+   制镜像需要挂载 F2FS，而 GitHub runner 的内核（6.17.0-1022-azure）没有 f2fs 模块，`/proc/filesystems` 里查不到，所以 CI 上做不到。`verify-f2fs.yml` 只验证工具行为并如实记录边界。
+
+   离线导入 `sload.f2fs -P` 不需要挂载，但它只保留 owner 与 setuid，**不保留 user xattr**——已在 192.168.5.11 实测确认。所以完整镜像必须在支持挂载的环境生成：本地或自托管 runner。CI 产出的是 rootfs 树打包（`build-rootfs.yml`），供本地制镜像消费。
 
 ## CI 分工
 
