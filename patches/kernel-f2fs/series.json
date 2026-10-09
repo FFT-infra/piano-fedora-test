@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "target": "sunuefi",
-  "note": "按顺序应用。每个补丁的 target_sha256 是应用前该文件必须匹配的摘要；上游更新后不匹配会报错退出，不静默跳过。",
+  "note": "按顺序应用。每个补丁的 targets 是应用前该文件必须匹配的摘要；上游更新后不匹配会报错退出，不静默跳过。creates 必须与实际新建的文件完全一致。",
   "base": {
     "sunuefi_commit": "ce5ee2926ec62c7b51e13065ebeafd98835c5e79"
   },
@@ -15,6 +15,15 @@
       "creates": [
         "linux/configs/piano-f2fs.config"
       ]
+    },
+    {
+      "file": "0002-accept-f2fs-root.patch",
+      "summary": "硬件准备与调试引导接受 F2FS 根分区，不再只认 ext4",
+      "targets": {
+        "linux/userspace/piano-ram-hardware-prepare": "dd81bd71a2636a3dc5cd273a037a9797c875832da89b709a22bc22d0ff3010e8",
+        "linux/userspace/piano-debug-bootstrap": "e374307a81e4b4efc31c056cb47a129923cd55265a96214268a3ea14f6d75063"
+      },
+      "creates": []
     }
   ]
 }

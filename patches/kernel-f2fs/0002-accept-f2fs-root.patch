@@ -1,0 +1,72 @@
+From 2bc02cce2c8a239517bf07666e16e42d01f2ef97 Mon Sep 17 00:00:00 2001
+From: piano-fedora-test <dev@piano.invalid>
+Date: Sat, 10 Oct 2026 02:02:39 +0800
+Subject: [PATCH] hardware-prepare: accept an F2FS root partition
+
+piano-ram-hardware-prepare is the executable the initramfs chroots into before
+switch_root. Its require_ram() refused anything but ext4 in three places, so a
+Fedora F2FS root was rejected at boot even when the bootstrap had mounted it
+correctly. The debug bootstrap had the same ext4-only branch.
+
+The check exists to prove the root is the dedicated labelled Linux partition
+rather than an Android one. That property does not come from ext4: the GPT
+partition name, the filesystem label and the kernel command line together
+already identify it. F2FS joins ext4 as a reviewed root type, and the blkid
+identity probe accepts both.
+
+Nothing else changes: the partition name, label, device identity and
+repeat-read checks all stay as they were.
+---
+ linux/userspace/piano-debug-bootstrap      |  4 +++-
+ linux/userspace/piano-ram-hardware-prepare | 11 ++++++++---
+ 2 files changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/linux/userspace/piano-debug-bootstrap b/linux/userspace/piano-debug-bootstrap
+index 0b049c8..c91993c 100755
+--- a/linux/userspace/piano-debug-bootstrap
++++ b/linux/userspace/piano-debug-bootstrap
+@@ -55,7 +55,9 @@ while read -r dev point type rest; do [ "$point" != / ] || ROOT_TYPE=$type; done
+ ram_root() {
+     case "$ROOT_TYPE" in
+         rootfs|tmpfs|ramfs) return 0 ;;
+-        ext4) /usr/lib/piano/piano-disk-hardware-prepare --check-root >/dev/null 2>&1 ;;
++        # ext4 and f2fs are the reviewed dedicated-root types; both are verified
++        # by the same hardware-prepare check rather than by name alone.
++        ext4|f2fs) /usr/lib/piano/piano-disk-hardware-prepare --check-root >/dev/null 2>&1 ;;
+         *) return 1 ;;
+     esac
+ }
+diff --git a/linux/userspace/piano-ram-hardware-prepare b/linux/userspace/piano-ram-hardware-prepare
+index 0ed7ae7..d366292 100755
+--- a/linux/userspace/piano-ram-hardware-prepare
++++ b/linux/userspace/piano-ram-hardware-prepare
+@@ -120,13 +120,17 @@ def require_ram(proc=Path('/proc'), run=Path('/run')):
+         policy = json.loads(Path('/etc/piano/root-policy.json').read_text())
+         label_mode = policy.get('mode') == 'label'
+         partuuid = policy.get('root_partuuid', '')
++        # The dedicated Linux root may be ext4 or f2fs. Identity comes from the
++        # GPT partition name, the filesystem label and the kernel command line;
++        # the filesystem type only has to be one of the reviewed ones.
++        known_root_types = ('ext4', 'f2fs')
+         if label_mode:
+             if (policy.get('root_label') != 'PIANOROOT'
+                     or policy.get('root_partlabel') != 'sunuefi_root'
+-                    or modes != ['LABEL=PIANOROOT'] or roots[0][2] != 'ext4'):
++                    or modes != ['LABEL=PIANOROOT'] or roots[0][2] not in known_root_types):
+                 raise Refused('root is not the dedicated labelled Linux partition')
+         elif (not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', partuuid)
+-                or modes != ['PARTUUID=' + partuuid] or roots[0][2] != 'ext4'):
++                or modes != ['PARTUUID=' + partuuid] or roots[0][2] not in known_root_types):
+             raise Refused('root is not the explicitly configured Linux partition')
+         device = (run / 'piano-root-device').read_text().strip()
+         if not re.fullmatch(r'/dev/sd[a-z]+[0-9]+', device):
+@@ -148,7 +152,8 @@ def require_ram(proc=Path('/proc'), run=Path('/run')):
+                     raise Refused('ambiguous mounted root identity')
+                 values[key] = value
+             if (values.get('PART_ENTRY_NAME') != 'sunuefi_root'
+-                    or values.get('LABEL') != 'PIANOROOT' or values.get('TYPE') != 'ext4'):
++                    or values.get('LABEL') != 'PIANOROOT'
++                    or values.get('TYPE') not in known_root_types):
+                 raise Refused('mounted root label, partition name or filesystem differs')
+         else:
+             actual = subprocess.check_output(['/usr/sbin/blkid', '-s', 'PARTUUID', '-o', 'value', device], text=True).strip().lower()

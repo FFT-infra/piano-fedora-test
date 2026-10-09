@@ -10,6 +10,8 @@ test:
 	python3 tests/check_esp_image.py
 	python3 tests/check_patches.py
 	python3 tests/check_initramfs.py
+	python3 tests/check_rootfs_policy.py
+	python3 tests/check_stage_payload.py
 
 RELEASEVER ?= 44
 plan:

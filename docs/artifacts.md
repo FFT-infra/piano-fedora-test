@@ -1,33 +1,55 @@
 # 部署产物
 
-部署一台 piano 需要四样东西，来源分两类：SunUEFI 提供启动链与内核，本仓库提供 rootfs 与镜像。
+部署一台 piano 需要六样东西。SunUEFI 提供启动链，本仓库提供 Fedora 侧的
+rootfs、F2FS 策略与镜像。
 
-| 产物 | 来源 | 本仓库状态 |
+| 产物 | 谁产出 | 状态 |
 | --- | --- | --- |
-| UEFI 固件（合体 BOOT） | SunUEFI `build.sh uefi` | 已在 CI 构建 |
-| 内核 Image + DTB + modules | SunUEFI `build.sh linux` | 待接入 |
-| Fedora rootfs 树 | 本仓库 `build-rootfs.yml` | 已在 CI 构建 |
-| F2FS root 镜像 | 本仓库 `build-image.yml` | 已实现 |
-| ESP 镜像 | 本仓库 `build-esp-image.py` | 已实现 |
+| UEFI 固件（合体 BOOT） | `build-uefi.yml` | 已在 CI 构建 |
+| 内核 Image + modules | `build-kernel.yml` | 已在 CI 构建；F2FS 补丁后正在重编 |
+| Fedora rootfs 树 | `build-rootfs.yml` | 已在 CI 构建 |
+| initramfs（F2FS） | `build-initramfs.yml` | 已实现，本机离线验证通过 |
+| F2FS root 镜像 | `build-image.yml` | 已实现；新增策略与载荷步骤 |
+| ESP 与 boot.img | `build-bundle.yml` | 已改为调用上游打包器 |
 
-## UEFI 构建
+## 构建顺序
 
-`build-uefi.yml` 用 SunUEFI 官方的 `containers/Dockerfile` 建构建容器，在容器里跑 `build.sh sources` 与 `build.sh uefi`。手工逐个补宿主依赖会在长构建中途才暴露缺项，改用官方容器一次装齐。
+产物之间有依赖，触发顺序固定：
 
-实测产物：`PianoUEFI-product.img`（28 MB）、`PianoUEFI-product.fd`（3 MB）、`BootShim.bin`，附 manifest 记录各来源 SHA。
+    build-kernel.yml ─┐
+    build-uefi.yml   ─┼─→ build-bundle.yml
+    build-rootfs.yml ─┴─→ build-initramfs.yml ─→ build-image.yml ─┘
 
-## 内核为什么待接入
+`build-image.yml` 与 `build-bundle.yml` 各自按 artifact 名回溯到产出它的
+那次 run，不依赖触发顺序。
 
-内核构建约 2.5 小时，`build-kernel.yml` 已实现，正在首次运行。它按 `sources.lock.json` 取 SunUEFI 与内核的固定 commit，跑 `prepare_release_kernel` 与 `build_piano_full_kernel`。
+## 内核
 
-## 部署包应有的内容
+`build-kernel.yml` 按 `sources.lock.json` 取 SunUEFI 与内核的固定 commit，
+先应用本仓库补丁（`scripts/apply-patches.py`），再跑
+`prepare_release_kernel` 与 `build_piano_full_kernel`。约 2.5 小时。
 
-| 文件 | 说明 |
-| --- | --- |
-| `esp.img` | FAT32，含 UEFI 启动文件与内核 |
-| `pianoroot.f2fs.img` | F2FS root，label `PIANOROOT` |
-| `boot.img` | 合体 BOOT，含 SunUEFI 选择器 |
-| `manifest.json` | 各产物的 SHA256、容量、来源 commit |
+补丁让内核内建 F2FS，并让硬件准备接受 F2FS 根分区。没有它，CI 产出的内核
+里 `CONFIG_F2FS_FS` 是关的，root 镜像做得再对也挂不上。
+
+## rootfs 侧的三步处理
+
+`build-image.yml` 在制镜像前对 rootfs 做三步，缺一步启动就会失败：
+
+1. `scripts/stage-rootfs-payload.py` 把内核模块装进
+   `usr/lib/modules/<release>`，并放 `piano-ram-hardware-prepare` 与它依赖的
+   两个 DMA 校验器。引导脚本要求这两条路径都存在，缺一条进救援 shell。
+2. `scripts/apply-rootfs-policy.py` 写 F2FS 版 fstab、udev 放行规则和关机
+   hook。上游版本写的是 ext4，F2FS 根会被自己的保护规则设成只读。
+3. `scripts/build-f2fs-image.py` 挂载真实 F2FS，用 `tar --xattrs --acls`
+   写入并逐项读回核对。
+
+## ESP 与 boot.img
+
+`build-bundle.yml` 调用上游 `tools/package_release.py`，不自己拼 ESP。它负责
+DTB 的 CPU model overlay、mkbootimg 合体 `boot.img`、固件要求的
+`/EFI/Piano/stable/` 布局和逐文件读回。不传 `--root-size-mib`，root 走本仓库
+的 F2FS 路径，不用上游的 ext4 分支。
 
 ## 产物尺寸（实测）
 
@@ -42,5 +64,7 @@
 
 ## 尚未验证
 
-- UEFI 固件与内核尚未在本仓库构建过。
+- 内核补丁后的重编结果未回。
+- initramfs、F2FS 策略与 rootfs 载荷只在本机做过离线验证。
+- ESP 与 boot.img 的完整流程未在 CI 跑过（依赖 mkbootimg 子模块）。
 - 没有任何产物在设备上启动过。
