@@ -76,11 +76,47 @@ def main():
         check(run("--sunuefi", str(fake), "--only", "no-such-series").returncode == 2,
               "an unknown series name should be rejected")
 
+    # 补丁不能碰上游已有的文件。
+    #
+    # 这条是本轮 CI 失败换来的：补丁里混进过一个 .gitignore，本地 fixture
+    # 没有这个文件所以没暴露，真实 checkout 上 git apply 直接拒绝覆盖。
+    # 现在对每个补丁的 --check 都要求它在真实目录结构上可应用。
+    sunuefi = ROOT.parent / "mipad8p-piano" / "sources" / "Project-SunUEFI"
+    if (sunuefi / "build.sh").is_file():
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "sunuefi"
+            # 只复制补丁会碰到的路径，避免搬整个仓库。
+            for manifest in series_files:
+                series = json.loads(manifest.read_text(encoding="utf-8"))
+                for patch in series.get("patches", []):
+                    for relative in (patch.get("targets") or {}):
+                        source = sunuefi / relative
+                        destination = work / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        if source.is_file():
+                            destination.write_bytes(source.read_bytes())
+            (work / "build.sh").write_text("#!/bin/sh\n")
+            # 把上游已有的文件也放进来，才能发现"补丁想创建已存在文件"。
+            for existing in (".gitignore",):
+                source = sunuefi / existing
+                if source.is_file():
+                    (work / existing).write_bytes(source.read_bytes())
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=work, check=True)
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-q", "-m", "base"],
+                cwd=work, check=True,
+            )
+            result = run("--sunuefi", str(work), "--check")
+            check(result.returncode == 0,
+                  f"patches must apply to the real upstream layout: {result.stderr.strip()}")
+
     if failures:
         for item in failures:
             print(f"FAIL: {item}", file=sys.stderr)
         return 1
-    print(f"OK: {len(series_files)} patch series registered and reject paths behave")
+    print(f"OK: {len(series_files)} patch series registered, real-layout check and reject paths behave")
     return 0
 
 

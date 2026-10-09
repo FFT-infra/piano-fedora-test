@@ -1,6 +1,6 @@
-From 444dd5078e00fda80231f772aa06493b9aca28c1 Mon Sep 17 00:00:00 2001
+From 0d3185b1e2df6dbac3e598d7e9a68619e70760fa Mon Sep 17 00:00:00 2001
 From: piano-fedora-test <dev@piano.invalid>
-Date: Sat, 10 Oct 2026 01:42:03 +0800
+Date: Sat, 10 Oct 2026 01:50:29 +0800
 Subject: [PATCH] kernel: add F2FS root support to the full candidate
 
 The Fedora dual-boot image mounts an F2FS root partition. The full candidate
@@ -19,21 +19,11 @@ effective configuration without being detected.
 
 Options mirror sheng's sm8550.config, the reference for this project.
 ---
- .gitignore                       |  2 ++
  linux/configs/piano-f2fs.config  | 15 +++++++++++++++
  tools/build_piano_full_kernel.py | 21 +++++++++++++++------
- 3 files changed, 32 insertions(+), 6 deletions(-)
- create mode 100644 .gitignore
+ 2 files changed, 30 insertions(+), 6 deletions(-)
  create mode 100644 linux/configs/piano-f2fs.config
 
-diff --git a/.gitignore b/.gitignore
-new file mode 100644
-index 0000000..7a60b85
---- /dev/null
-+++ b/.gitignore
-@@ -0,0 +1,2 @@
-+__pycache__/
-+*.pyc
 diff --git a/linux/configs/piano-f2fs.config b/linux/configs/piano-f2fs.config
 new file mode 100644
 index 0000000..c67b580

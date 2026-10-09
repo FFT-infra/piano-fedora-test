@@ -71,6 +71,45 @@ def check_created(sunuefi, patch):
             raise PatchError(f"{patch['file']}: refuses to overwrite {relative}")
 
 
+def declared_files(patch_path):
+    """从补丁里读出它实际碰的文件，区分新建与修改。
+
+    这条校验是本轮 CI 失败换来的：补丁里混进过一个 `.gitignore`，而
+    series.json 没申报它，于是本地 fixture 没暴露、真实 checkout 上
+    `git apply` 直接拒绝覆盖已存在文件。碰了却不申报的文件必须报错。
+    """
+    created, modified = set(), set()
+    current = None
+    for line in Path(patch_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("diff --git "):
+            # diff --git a/PATH b/PATH
+            parts = line.split()
+            if len(parts) >= 4 and parts[2].startswith("a/") and parts[3].startswith("b/"):
+                current = parts[3][2:]
+                modified.add(current)
+        elif line.startswith("new file mode") and current:
+            created.add(current)
+    return created, modified - created
+
+
+def verify_declared(patch, patch_path):
+    created, modified = declared_files(patch_path)
+    declared_creates = set(patch.get("creates", []))
+    declared_targets = set(patch.get("targets", {}))
+    if created != declared_creates:
+        raise PatchError(
+            f"{patch['file']}: creates mismatch\n"
+            f"  in patch:    {sorted(created)}\n"
+            f"  in series:   {sorted(declared_creates)}"
+        )
+    if modified != declared_targets:
+        raise PatchError(
+            f"{patch['file']}: modified-file mismatch\n"
+            f"  in patch:    {sorted(modified)}\n"
+            f"  in series:   {sorted(declared_targets)}"
+        )
+
+
 def run_git_apply(sunuefi, patch_path, check_only):
     command = ["git", "apply", "--whitespace=error-all"]
     if check_only:
@@ -90,6 +129,7 @@ def apply_folder(sunuefi, folder, check_only=False):
         patch_path = folder / patch["file"]
         if not patch_path.is_file():
             raise PatchError(f"missing patch file: {patch_path}")
+        verify_declared(patch, patch_path)
         verify_targets(sunuefi, series, patch)
         check_created(sunuefi, patch)
         run_git_apply(sunuefi, patch_path, check_only)
