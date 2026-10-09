@@ -25,17 +25,18 @@ SunUEFI 的构建链需要固定源码、EDK2 工具链和 ARM64 交叉编译环
 | `boot.img` | 合体 BOOT，含 SunUEFI 选择器 |
 | `manifest.json` | 各产物的 SHA256、容量、来源 commit |
 
-## 产物尺寸
+## 产物尺寸（实测）
 
-| 产物 | 未压缩 | 压缩后 |
-| --- | --- | --- |
-| Fedora rootfs 树 | 约 5.2 GB | 1.9 GB（`.tar.zst`） |
-| F2FS root 镜像（8192 MiB） | 8 GiB 稀疏 | 视内容而定，大部分为空块 |
+| 产物 | 未压缩 | 压缩后 | 状态 |
+| --- | --- | --- | --- |
+| Fedora 44 rootfs 树 | 5.2 GB | 1.90 GB | 已构建 |
+| F2FS root 镜像（8192 MiB） | 8.00 GiB | 1.87 GiB | 已构建并核对 |
+
+镜像核对结果：74825 个条目全部一致，xattr 逐项比对通过，fsck 退出码 0。
 
 仓库为 public，artifact 与 Actions 分钟数不计费。
 
 ## 尚未验证
 
 - UEFI 固件与内核尚未在本仓库构建过。
-- F2FS 镜像尚未用真实 rootfs 制作过，只在 64 MiB fixture 上验证了工具正确性。
 - 没有任何产物在设备上启动过。
