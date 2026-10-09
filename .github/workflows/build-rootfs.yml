@@ -1,0 +1,66 @@
+name: build-rootfs
+
+# 在 x86_64 runner 上构建 aarch64 Fedora rootfs。用 podman + dnf --installroot，
+# 不接触设备。
+on:
+  workflow_dispatch:
+    inputs:
+      releasever:
+        description: "Fedora 版本"
+        required: false
+        default: "44"
+      desktop:
+        description: "gnome / kde / server"
+        required: false
+        default: "gnome"
+
+permissions:
+  contents: read
+
+jobs:
+  rootfs:
+    # 原生 arm64 runner：dnf --installroot 直接产出 aarch64 包，
+    # 不需要 --forcearch 或 qemu，和 fedora-sheng 的做法一致。
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+
+      - name: Pull Fedora image
+        run: podman pull "registry.fedoraproject.org/fedora:${{ inputs.releasever }}"
+
+      - name: Build rootfs
+        run: |
+          set -euo pipefail
+          python3 scripts/build-fedora-rootfs.py \
+            --execute \
+            --releasever "${{ inputs.releasever }}" \
+            --desktop "${{ inputs.desktop }}"
+
+      - name: Inspect result
+        run: |
+          set -euo pipefail
+          OUT="build/distros/fedora-${{ inputs.releasever }}-${{ inputs.desktop }}"
+          test -d "$OUT/rootfs"
+          echo "rootfs size: $(du -sh "$OUT/rootfs" | cut -f1)"
+          cat "$OUT/manifest.json"
+          du -sh "$OUT/rootfs"/* | sort -rh | head -10
+
+      - name: Package rootfs
+        run: |
+          set -euo pipefail
+          OUT="build/distros/fedora-${{ inputs.releasever }}-${{ inputs.desktop }}"
+          tar -I 'zstd -10 -T0' -cf "rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}.tar.zst" \
+            -C "$OUT" rootfs manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-${{ inputs.releasever }}-${{ inputs.desktop }}
+          path: rootfs-*.tar.zst
+          retention-days: 14
