@@ -81,6 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           if grep -qw f2fs /proc/filesystems; then
+            echo "kernel reports f2fs support; running the mount roundtrip"
             sudo python3 scripts/build-f2fs-image.py \
               --rootfs fixture \
               --size-mib 64 \
@@ -89,9 +90,8 @@ jobs:
               --manifest f2fs-manifest.json
             cat f2fs-manifest.json
           else
-            echo "SKIPPED: runner kernel has no f2fs support."
-            echo "Mount-based import must run where f2fs can be mounted."
-            printf '{"status":"SKIPPED_NO_KERNEL_F2FS","reason":"runner kernel lacks f2fs"}\n' > f2fs-manifest.json
+            echo "runner kernel does not list f2fs; the mount roundtrip cannot run here."
+            printf '{"status":"SKIPPED_NO_KERNEL_F2FS","reason":"kernel does not list f2fs in /proc/filesystems"}\n' > f2fs-manifest.json
             cat f2fs-manifest.json
           fi
 

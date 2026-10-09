@@ -95,14 +95,24 @@ def verify(image, source_root, work):
     try:
         # 用 tar 的 --compare 语义：两边各自导出规范化的属性清单再比。
         def inventory(base):
+            # 目录的 size 由文件系统自己决定（F2FS 与 ext4 不同，且随目录项数
+            # 变化），不参与比对。文件比对 type/uid/gid/mode/size。
             out = capture([
                 "find", base, "-mindepth", "1", "-printf",
-                "%P\\t%y\\t%u\\t%g\\t%m\\t%s\\n",
+                "%P\\t%y\\t%u\\t%g\\t%m\\t%y\\t%s\\n",
             ])
-            return out.decode()
+            rows = []
+            for line in out.decode().splitlines():
+                fields = line.split("\t")
+                name, kind, uid, gid, mode, size = fields[0], fields[1], fields[2], fields[3], fields[4], fields[6]
+                if kind == "d":
+                    rows.append(f"{name}\t{kind}\t{uid}\t{gid}\t{mode}")
+                else:
+                    rows.append(f"{name}\t{kind}\t{uid}\t{gid}\t{mode}\t{size}")
+            return rows
 
-        left = inventory(source_root).splitlines()
-        right = inventory(mount).splitlines()
+        left = inventory(source_root)
+        right = inventory(mount)
         if sorted(left) != sorted(right):
             only_left = sorted(set(left) - set(right))[:5]
             only_right = sorted(set(right) - set(left))[:5]
