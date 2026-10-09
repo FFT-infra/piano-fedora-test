@@ -1,0 +1,92 @@
+name: build-image
+
+# 从 Fedora rootfs 制作可刷写的 F2FS root 镜像。
+#
+# 单 job 完成：下载 rootfs → 制镜像 → 读回核对 → 打包上传。
+# 不跨 job 搬大文件。F2FS 需要内核模块，这里先装 linux-modules-extra。
+on:
+  workflow_dispatch:
+    inputs:
+      rootfs_artifact:
+        description: "rootfs artifact 名，例如 rootfs-44-gnome"
+        required: true
+        default: "rootfs-44-gnome"
+      size_mib:
+        description: "root 镜像容量（MiB）"
+        required: false
+        default: "8192"
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq f2fs-tools attr zstd
+          # f2fs 挂载需要内核模块，默认不带。
+          KREL="$(uname -r)"
+          sudo apt-get install -y -qq "linux-modules-extra-${KREL}" 2>/dev/null \
+            || sudo apt-get install -y -qq linux-modules-extra-azure 2>/dev/null \
+            || echo "no modules-extra matched"
+          sudo modprobe f2fs 2>&1 || true
+          if ! grep -qw f2fs /proc/filesystems; then
+            echo "::error::kernel cannot mount f2fs; image build needs it"
+            exit 1
+          fi
+          echo "f2fs mountable"
+
+      - name: Download rootfs
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.rootfs_artifact }}
+          path: incoming
+
+      - name: Unpack rootfs
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          sudo tar -I zstd -xf incoming/*.tar.zst -C work
+          test -d work/rootfs
+          sudo du -sh work/rootfs
+
+      - name: Build F2FS root image
+        run: |
+          set -euo pipefail
+          sudo python3 scripts/build-f2fs-image.py \
+            --rootfs work/rootfs \
+            --size-mib "${{ inputs.size_mib }}" \
+            --output "pianoroot-${{ inputs.size_mib }}.f2fs.img" \
+            --verify \
+            --manifest root-image-manifest.json
+          cat root-image-manifest.json
+
+      - name: Report image size
+        run: |
+          set -euo pipefail
+          ls -lh pianoroot-*.f2fs.img
+          echo "apparent: $(stat -c%s pianoroot-*.f2fs.img) bytes"
+          echo "on-disk:  $(du -h --apparent-size pianoroot-*.f2fs.img | cut -f1)"
+
+      - name: Compress image
+        run: |
+          set -euo pipefail
+          # 镜像大部分是空块，zstd 压得动。
+          zstd -10 -T0 --force -o "pianoroot-${{ inputs.size_mib }}.f2fs.img.zst" pianoroot-*.f2fs.img
+          ls -lh pianoroot-*.f2fs.img.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: root-image-${{ inputs.size_mib }}
+          path: |
+            pianoroot-*.f2fs.img.zst
+            root-image-manifest.json
+          retention-days: 14
+          compression-level: 1

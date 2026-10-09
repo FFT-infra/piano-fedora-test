@@ -22,9 +22,9 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 
    制镜像不用 `sload -P`。上游 f2fs-tools 的 sload 只保留 owner/mode，不枚举源树的 xattr/ACL/capability，用它会在导入阶段静默丢元数据。改为挂载真实 F2FS 后用 `tar --xattrs --acls --numeric-owner` 写入，再挂载读回逐项比对。
 
-   制镜像需要挂载 F2FS，而 GitHub runner 的内核（6.17.0-1022-azure）没有 f2fs 模块，`/proc/filesystems` 里查不到，所以 CI 上做不到。`verify-f2fs.yml` 只验证工具行为并如实记录边界。
+   制镜像需要挂载 F2FS。GitHub runner 的内核默认不带 f2fs，装上 `linux-modules-extra` 后 `modprobe f2fs` 可用，挂载式往返验证在 CI 上已跑通（`IMAGE_VERIFIED`，xattr 核对通过，fsck 退出码 0）。
 
-   离线导入 `sload.f2fs -P` 不需要挂载，但它只保留 owner 与 setuid，**不保留 user xattr**——已在 192.168.5.11 实测确认。所以完整镜像必须在支持挂载的环境生成：本地或自托管 runner。CI 产出的是 rootfs 树打包（`build-rootfs.yml`），供本地制镜像消费。
+   离线导入 `sload.f2fs -P` 不需要挂载，但它只保留 owner 与 setuid，**不保留 user xattr**——已在 192.168.5.11 实测确认。所以制镜像用挂载 + `tar --xattrs --acls`，不用 sload。
 
 ## CI 分工
 
@@ -33,8 +33,10 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 | `host-check.yml` | push / PR | 离线检查，`make test` |
 | `build-rootfs.yml` | 手动 | Fedora rootfs 树 + `.tar.zst`，上传 artifact |
 | `verify-f2fs.yml` | push / PR | 小 fixture 的 F2FS 元数据往返验证 |
+| `build-image.yml` | 手动 | F2FS root 镜像 + ESP 镜像 + manifest |
+| `build-bundle.yml` | 手动 | 汇总内核、UEFI、rootfs、镜像为部署包 |
 
-仓库为 public，artifact 与 Actions 分钟数不计费。`build-rootfs.yml` 的产物约 1.9 GB，重跑前注意旧 artifact 是否已过期。
+仓库为 public，artifact 与 Actions 分钟数不计费。
 3. 首次分区。只读探测本机并生成计划，用模拟 GPT 在主机上验证。
 4. 安装与验收。实际写入，启动验证，双向切换。
 
