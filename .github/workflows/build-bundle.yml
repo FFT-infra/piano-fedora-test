@@ -36,23 +36,54 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq zstd dosfstools mtools jq
 
+      - name: Resolve artifact run ids
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 三个输入来自不同 workflow 的不同 run，逐个找它们的 run id。
+          find_run() {
+            local wf="$1" name="$2"
+            for id in $(gh run list --workflow="$wf" --limit 20 --json databaseId --jq '.[].databaseId'); do
+              if gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
+                   --jq ".artifacts[].name" 2>/dev/null | grep -qx "$name"; then
+                echo "$id"; return 0
+              fi
+            done
+            return 1
+          }
+          K=$(find_run build-kernel.yml "${{ inputs.kernel_artifact }}") || { echo "::error::kernel artifact not found"; exit 1; }
+          U=$(find_run build-uefi.yml "${{ inputs.uefi_artifact }}") || { echo "::error::uefi artifact not found"; exit 1; }
+          R=$(find_run build-image.yml "${{ inputs.root_image_artifact }}") || { echo "::error::root image artifact not found"; exit 1; }
+          echo "kernel_run=$K" >> "$GITHUB_OUTPUT"
+          echo "uefi_run=$U" >> "$GITHUB_OUTPUT"
+          echo "root_run=$R" >> "$GITHUB_OUTPUT"
+          echo "kernel run $K, uefi run $U, root run $R"
+
       - name: Download kernel
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.kernel_artifact }}
           path: in/kernel
+          run-id: ${{ steps.src.outputs.kernel_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download UEFI
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.uefi_artifact }}
           path: in/uefi
+          run-id: ${{ steps.src.outputs.uefi_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download root image
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.root_image_artifact }}
           path: in/root
+          run-id: ${{ steps.src.outputs.root_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unpack inputs
         run: |

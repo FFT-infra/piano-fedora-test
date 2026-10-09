@@ -43,11 +43,37 @@ jobs:
           fi
           echo "f2fs mountable"
 
+      - name: Find the run that produced the rootfs artifact
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # download-artifact 默认只看当前 run。rootfs 由 build-rootfs 另一次
+          # run 产出，所以要显式找到那个 run 的 id。
+          NAME="${{ inputs.rootfs_artifact }}"
+          RID=""
+          for id in $(gh run list --workflow=build-rootfs.yml --limit 20 \
+                        --json databaseId --jq '.[].databaseId'); do
+            if gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
+                 --jq ".artifacts[].name" 2>/dev/null | grep -qx "$NAME"; then
+              RID="$id"; break
+            fi
+          done
+          if [ -z "$RID" ]; then
+            echo "::error::no build-rootfs run has an artifact named $NAME"
+            exit 1
+          fi
+          echo "run_id=$RID" >> "$GITHUB_OUTPUT"
+          echo "using run $RID"
+
       - name: Download rootfs
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.rootfs_artifact }}
           path: incoming
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Unpack rootfs
         run: |
