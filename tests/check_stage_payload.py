@@ -5,6 +5,7 @@
 `/sysroot/usr/lib/piano/piano-disk-hardware-prepare`。缺任一条启动就进救援。
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -12,10 +13,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from kernel_fixture import make_kernel as sealed_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 TOOL = ROOT / "scripts" / "stage-rootfs-payload.py"
 RELEASE = "7.2.9-fixture"
 
@@ -31,11 +34,13 @@ def run(*args):
 
 
 def make_rootfs(tmp):
-    """建一个像 Fedora 的树：/lib 与 /bin 是指向 /usr 的符号链接。"""
+    """Fedora merged-usr，包括 Fedora 44 的 /usr/local/sbin 合并。"""
     rootfs = tmp / "rootfs"
     (rootfs / "usr" / "bin").mkdir(parents=True)
     (rootfs / "lib").symlink_to("usr/lib")
     (rootfs / "bin").symlink_to("usr/bin")
+    (rootfs / "usr/local/bin").mkdir(parents=True)
+    (rootfs / "usr/local/sbin").symlink_to("bin")
     return rootfs
 
 
@@ -63,6 +68,32 @@ def main():
         preflight_source = tmp / "preflight-source"
         preflight_source.mkdir()
         (preflight_source / "build.sh").write_text("#!/bin/sh\n")
+
+        # 目录布局回归不依赖联网或上游 checkout。这里只替代来源摘要，
+        # 实际复制、路径保护和目标链接仍走生产代码；来源完整性在后面核对。
+        spec = importlib.util.spec_from_file_location("stage_payload", TOOL)
+        stage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stage)
+        digests = {
+            stage.CHECKER: stage.CHECKER_SHA256,
+            stage.CONTEXT_CHECKER: stage.CONTEXT_CHECKER_SHA256,
+            stage.HARDWARE_PREPARE: "a171ece910b51b7a9586c58277df78957709a4fff559245c9919d3f8432c925c",
+            "linux/userspace/piano-debug-bootstrap": "d201ec73a70f3db8d80a9e424fe88ec4de90a31bf2cba49d1229970ea49427ba",
+            "linux/userspace/piano-boot-task-snapshot": "fixture",
+        }
+        for relative in digests:
+            source = preflight_source / relative
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("#!/bin/sh\nexit 0\n")
+        with patch.object(stage, "sha256", side_effect=lambda p: digests[p.relative_to(preflight_source).as_posix()]):
+            stage.stage_hardware(rootfs, preflight_source)
+        rescue = rootfs / "usr/local/bin/piano-debug-bootstrap"
+        check(rescue.is_file() and os.access(rescue, os.X_OK),
+              "rescue helper must be installed in Fedora's canonical local bin")
+        check((rootfs / "usr/local/sbin").is_symlink(),
+              "staging must preserve Fedora's local sbin compatibility link")
+        check((rootfs / "usr/local/sbin/piano-debug-bootstrap").samefile(rescue),
+              "the upstream rescue path must resolve to the installed helper")
 
         # 空目录不算系统树。
         empty = tmp / "empty"
