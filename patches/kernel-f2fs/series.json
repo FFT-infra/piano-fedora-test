@@ -3,14 +3,14 @@
   "target": "sunuefi",
   "note": "按顺序应用。每个补丁的 targets 是应用前该文件必须匹配的摘要；上游更新后不匹配会报错退出，不静默跳过。creates 必须与实际新建的文件完全一致。",
   "base": {
-    "sunuefi_commit": "ce5ee2926ec62c7b51e13065ebeafd98835c5e79"
+    "sunuefi_commit": "6a8763d010adb00b18911d6d12e6dd02869f98b9"
   },
   "patches": [
     {
       "file": "0001-add-f2fs-root-support.patch",
       "summary": "新增 F2FS 配置片段，登记为可审阅覆盖，并把 F2FS_FS 加进最终配置校验",
       "targets": {
-        "tools/build_piano_full_kernel.py": "8cbbc43e20775a7aa417a6de85aa676d3c8f7bb3b46805fd39ed687542e36c39"
+        "tools/build_piano_full_kernel.py": "a4257470e7c8d2252a2e09cc47b1ec8e048db4f7116f1eb9c85165b9259d3e22"
       },
       "creates": [
         "linux/configs/piano-f2fs.config"
@@ -29,7 +29,7 @@
       "file": "0003-fedora-root-and-selinux.patch",
       "summary": "显式选择 F2FS 强制命令行与 Fedora SELinux，保留原有源码和硬件校验",
       "targets": {
-        "tools/build_piano_full_kernel.py": "c6eb1a3004cb790f664e3f0b3e1819e3bd764f3bfc56ed329efd480007d78e58"
+        "tools/build_piano_full_kernel.py": "de0fc188e6ed768eee18d03b4256169a60cbc8ab35b2b237c14def4a44042286"
       },
       "creates": []
     },

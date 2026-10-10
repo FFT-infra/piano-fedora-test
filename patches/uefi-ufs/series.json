@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "target": "sunuefi",
+  "note": "强制将 UFS 设备恢复至 Active 电源模式并为 REPORT_LUNS 和 READ_CAPACITY_16 增加带延时的有界重试，避免在 1TB UFS 机器上陷入 NOT READY 死循环。",
+  "base": {
+    "sunuefi_commit": "6a8763d010adb00b18911d6d12e6dd02869f98b9"
+  },
+  "patches": [
+    {
+      "file": "0001-ufs-power-resume-retry.patch",
+      "summary": "强制 UFS 设备电源恢复为 Active 并为 SCSI 查询与容量读取增加重试",
+      "targets": {
+        "uefi/core/PianoUfsReadOnlyDma.c": "e390ea634a885d992beceeba82ee61229ca532d8144d8a67e419601036827091"
+      },
+      "creates": []
+    }
+  ]
+}

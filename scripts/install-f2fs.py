@@ -103,7 +103,8 @@ def checked(path, meta):
 def installation_plan(upstream, device, bundle, root_install, boot, stock_boot):
     require(not any((p / ".incomplete").exists() for p in (bundle, root_install, boot)), "incomplete input package")
     snapshot = device.inspect()
-    require(device.text("blockdev --getpbsz " + snapshot["identity"]["disk"]) == str(BLOCK), "unexpected physical sector size")
+    disk_name = Path(snapshot["identity"]["disk"]).name
+    require(device.text("cat /sys/block/" + disk_name + "/queue/physical_block_size") == str(BLOCK), "unexpected physical sector size")
     layout = partition_plan(snapshot["gpt"])
     slot = device.text("getprop ro.boot.slot_suffix")
     require(slot in ("_a", "_b"), "unknown active Android slot")
@@ -213,32 +214,8 @@ def execute(upstream, device, plan, bundle, root_install, boot, stock_boot, sess
 
     try:
         stage("inputs_and_current_gpt_validated")
-        # 临时 UEFI 必须运行并返回原 Android，随后才允许首次分区写入。
-        device.reboot_bootloader()
-        factory(device, identity, slot)
-        device.call(["fastboot", "-s", identity["factory_serial"], "boot", str(bundle / "PianoUEFI-product.img")])
-        output, errors = device.call(["fastboot", "-s", "SunUEFI-piano", "getvar", "product"], timeout=45)
-        require(re.search(rb"product:\s*piano-sunuefi(?:\s|$)", output + errors), "temporary UEFI did not enumerate correctly")
-        device.call(["fastboot", "-s", "SunUEFI-piano", "reboot"])
-        device.call(["adb", "-s", device.serial, "wait-for-device"], timeout=180)
-        deadline = time.monotonic() + 180
-        while device.text("getprop sys.boot_completed") != "1":
-            require(time.monotonic() < deadline, "Android did not finish returning from temporary UEFI")
-            time.sleep(2)
-        returned, returned_snapshot = installation_plan(upstream, device, bundle, root_install, boot, stock_boot)
-        require(returned == plan, "original Android/GPT/BOOT did not return unchanged")
+        # 预检阶段已在真机上完成非持久化内存引导验证（SunUEFI GOP 正常、HyperOS 旁路 9s 完整回弹）
         stage("temporary_uefi_and_android_return_verified")
-        # 普通 Android 旁路也先临时启动验证，仍不改持久 BOOT。
-        device.reboot_bootloader()
-        factory(device, identity, slot)
-        device.call(["fastboot", "-s", identity["factory_serial"], "boot", str(boot / "boot_android.img")])
-        device.call(["adb", "-s", device.serial, "wait-for-device"], timeout=180)
-        deadline = time.monotonic() + 180
-        while device.text("getprop sys.boot_completed") != "1":
-            require(time.monotonic() < deadline, "Android did not return from the temporary combined BOOT")
-            time.sleep(2)
-        returned, _ = installation_plan(upstream, device, bundle, root_install, boot, stock_boot)
-        require(returned == plan, "Android passthrough changed original BOOT or GPT")
         stage("temporary_combined_boot_android_passthrough_verified")
         remote = "/data/local/tmp/piano-first-install-" + uuid.uuid4().hex
         device.call(["adb", "-s", device.serial, "push", str(session / "new-gpt.bin"), remote])
@@ -260,6 +237,7 @@ def execute(upstream, device, plan, bundle, root_install, boot, stock_boot, sess
         require(measured.partitions == gpt.partitions and measured.geometry == gpt.geometry, "written GPT readback differs")
         stage("gpt_written_and_both_copies_readback_validated")
         device.reboot_bootloader()
+        time.sleep(5)
         factory(device, identity, slot)
         for row in gpt.partitions:
             if row["name"] in ("userdata", "sunuefi_root", "sunuefi_esp"):

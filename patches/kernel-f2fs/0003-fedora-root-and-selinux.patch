@@ -1,3 +1,6 @@
+From 5dc876ccd054f88ac48a6c18639cf1d0bb7568f3 Mon Sep 17 00:00:00 2001
+From: piano-fedora-test <dev@piano.invalid>
+Date: Sat, 10 Oct 2026 19:39:03 +0800
 Subject: [PATCH] kernel: select F2FS and the Fedora SELinux policy explicitly
 
 Keep the immutable public kernel configs and hardware requirements. Add two
@@ -5,23 +8,26 @@ explicit build options: --root-fstype f2fs and --fedora-policy. The latter
 requires SECURITY_NETWORK, SECURITY_SELINUX and the SELinux LSM together;
 partial security overrides still fail validation. Effective configuration and
 tool hashes remain in the sealed kernel manifest.
+---
+ tools/build_piano_full_kernel.py | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
 
 diff --git a/tools/build_piano_full_kernel.py b/tools/build_piano_full_kernel.py
-index 3009a1c..58990a7 100644
+index 834d249..aae1bd7 100644
 --- a/tools/build_piano_full_kernel.py
 +++ b/tools/build_piano_full_kernel.py
-@@ -50,7 +50,9 @@ EARLY_CPUCP_OVERRIDES={'CONFIG_QCOM_CPUCP_MBOX':'y'}
+@@ -51,7 +51,9 @@ BLUETOOTH_OVERRIDES={'CONFIG_UHID':'m','CONFIG_HID_XIAOMI':'m'}
  # the file cannot drift into an unreviewed override.
  F2FS_OVERRIDES={'CONFIG_F2FS_FS':'y','CONFIG_F2FS_FS_XATTR':'y',
                  'CONFIG_F2FS_FS_POSIX_ACL':'y','CONFIG_F2FS_FS_SECURITY':'y'}
--ALLOWED_OVERRIDES={'CONFIG_UHID':'m',**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES}
+-ALLOWED_OVERRIDES={**BLUETOOTH_OVERRIDES,**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES}
 +FEDORA_OVERRIDES={'CONFIG_SECURITY_NETWORK':'y','CONFIG_SECURITY_SELINUX':'y',
 +                  'CONFIG_LSM':'"selinux"'}
-+ALLOWED_OVERRIDES={'CONFIG_UHID':'m',**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES,**FEDORA_OVERRIDES}
++ALLOWED_OVERRIDES={**BLUETOOTH_OVERRIDES,**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES,**FEDORA_OVERRIDES}
  
  
  def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
-@@ -68,7 +70,7 @@ def config_values(raw):
+@@ -69,7 +71,7 @@ def config_values(raw):
      return values
  
  
@@ -30,7 +36,7 @@ index 3009a1c..58990a7 100644
      override=config_values(fragment)
      if set(override)!={'CONFIG_CMDLINE'}:raise ValueError('Local full fragment may override only CONFIG_CMDLINE')
      original=json.loads(config_values(public)['CONFIG_CMDLINE']);provided=json.loads(override['CONFIG_CMDLINE'])
-@@ -80,7 +82,8 @@ def command_line(fragment,public,root_policy):
+@@ -81,7 +83,8 @@ def command_line(fragment,public,root_policy):
      if provided!=expected:raise ValueError('Preserve public handoff arguments except the OS root and console loglevel')
      if root_policy!='ram'and not re.fullmatch(r'(UUID=[0-9a-fA-F-]{8,64}|PARTUUID=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|LABEL=PIANO[A-Za-z0-9_-]{0,48})',root_policy):
          raise ValueError('External root must be an explicit UUID or PIANO-owned label; Android partition selectors are refused')
@@ -40,7 +46,7 @@ index 3009a1c..58990a7 100644
  
  
  def module_overrides(fragment,kind='bluetooth'):
-@@ -96,6 +99,8 @@ def validate_module_overrides(values):
+@@ -97,6 +100,8 @@ def validate_module_overrides(values):
      if any(key not in ALLOWED_OVERRIDES or value!=ALLOWED_OVERRIDES[key]for key,value in values.items()):raise ValueError('Only reviewed Bluetooth/flash/early-CPUCP/F2FS configuration overrides are supported')
      flash=set(values)&set(FLASH_OVERRIDES)
      if flash and flash!=set(FLASH_OVERRIDES):raise ValueError('Flash requires all four reviewed options')
@@ -49,7 +55,7 @@ index 3009a1c..58990a7 100644
      return values
  
  
-@@ -200,6 +205,8 @@ def main():
+@@ -201,6 +206,8 @@ def main():
      parser.add_argument('--build-dir',type=Path,default=OUT)
      parser.add_argument('--artifacts',type=Path,default=ARTIFACTS)
      parser.add_argument('--rebuild',action='store_true',help='Replace generated candidate artifacts with an incremental build')
@@ -58,19 +64,17 @@ index 3009a1c..58990a7 100644
      args=parser.parse_args()
      if not 1<=args.jobs<=8:raise SystemExit('Full candidate jobs must be 1..8')
      work,out,artifacts=(path.resolve()for path in (args.worktree,args.build_dir,args.artifacts));commit=args.commit
-@@ -209,13 +216,14 @@ def main():
+@@ -210,7 +217,9 @@ def main():
      if compiler==work or compiler.resolve()!=compiler:
          raise ValueError('Compiler checkout must be a separate physical build-owned directory')
      verify_source(work,commit);public=work/'arch/arm64/configs/piano_rootfs.config';fragment=ROOT/'linux/configs/piano-full.config'
 -    root_command=command_line(fragment.read_text(),public.read_text(),args.root)
 +    root_command=command_line(fragment.read_text(),public.read_text(),args.root,args.root_fstype)
++    if args.fedora_policy:
++        modules={**modules,**FEDORA_OVERRIDES}
      bluetooth=ROOT/'linux/configs/piano-bluetooth.config';flash=ROOT/'linux/configs/piano-flash.config'
      early_cpucp=ROOT/'linux/configs/piano-cpucp-early.config'
      f2fs=ROOT/'linux/configs/piano-f2fs.config'
-     modules={**module_overrides(bluetooth.read_text()),**module_overrides(flash.read_text(),'flash'),
-              **module_overrides(early_cpucp.read_text(),'early-cpucp'),
-              **module_overrides(f2fs.read_text(),'f2fs')}
-+    if args.fedora_policy:modules.update(FEDORA_OVERRIDES)
-     env,tools=toolchain();out.mkdir(parents=True,exist_ok=True);artifacts.mkdir(parents=True,exist_ok=True)
-     build_locks=[]
-     lock_root=ROOT/'build/locks';lock_root.mkdir(parents=True,exist_ok=True)
+-- 
+2.54.0
+

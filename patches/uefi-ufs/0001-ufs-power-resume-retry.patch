@@ -1,0 +1,101 @@
+From b9a8a333148bcf264fa18005de4e18ae334b4346 Mon Sep 17 00:00:00 2001
+From: piano-fedora-test <dev@piano.invalid>
+Date: Sat, 10 Oct 2026 19:39:43 +0800
+Subject: [PATCH] ufs: force device power resume and retry SCSI
+ inquiry/capacities
+
+When booting from Android HyperOS, the UFS device link exits Hibern8
+into active UniPro, but the device power mode remains in Sleep (0x22)
+or DeepSleep (0x33).
+
+Previously, SunUEFI only attempted PianoUfsBuildResumeActive if reading
+the device descriptor failed with EFI_DEVICE_ERROR. On 1TB UFS devices
+running newer HyperOS releases, descriptor reads succeed even in sleep
+mode, bypassing resume entirely. Subsequent SCSI REPORT_LUNS queries then
+fail with CHECK CONDITION: NOT READY (key=02 asc=04 ascq=00).
+
+1. Probe and resume UFS device power to Active (0x11) regardless of
+   descriptor status whenever current power mode is not Active.
+2. Add bounded retries with 50ms stall to REPORT_LUNS.
+3. Add bounded retries with 20ms stall to READ_CAPACITY_16.
+---
+ uefi/core/PianoUfsReadOnlyDma.c | 47 +++++++++++++++++++++------------
+ 1 file changed, 30 insertions(+), 17 deletions(-)
+
+diff --git a/uefi/core/PianoUfsReadOnlyDma.c b/uefi/core/PianoUfsReadOnlyDma.c
+index fc2b1d2..de3b650 100644
+--- a/uefi/core/PianoUfsReadOnlyDma.c
++++ b/uefi/core/PianoUfsReadOnlyDma.c
+@@ -379,16 +379,27 @@ STATIC EFI_STATUS ReadLunCapacity(VOID) {
+ #endif
+     &mData);if(EFI_ERROR(Status))return Status;
+   Status=PianoDmaMap(&mData);if(EFI_ERROR(Status))return Status;
+-  Status=ReadScsi("REPORT_LUNS",10,0,PianoUfsReportLuns,0,4096);
++  for(UINT8 Attempt=0;Attempt<5;++Attempt) {
++    Status=ReadScsi("REPORT_LUNS",10+Attempt,0,PianoUfsReportLuns,0,4096);
++    DEBUG((DEBUG_WARN,"SUNUEFI_UFS_REPORT_LUNS_ATTEMPT attempt=%u status=%r transferred=%u\n",Attempt+1,Status,mTransferred));
++    if(!EFI_ERROR(Status))break;
++    EFI_STATUS Resume=PianoUfsBuildResumeActive(mTrl.Cpu,mTrl.Bytes,mUcd.Cpu,mUcd.Bytes,mUcd.DeviceAddress,16+Attempt);
++    if(!EFI_ERROR(Resume))Submit("RESUME_LUN_ACTIVE",16+Attempt,FALSE);
++    gBS->Stall(50000);
++  }
+   DEBUG((DEBUG_WARN,"SUNUEFI_UFS_REPORT_LUNS_RESULT %r transferred=%u\n",Status,mTransferred));if(EFI_ERROR(Status))return Status;
+   UINT8 Luns[8];UINTN Count;
+   Status=PianoUfsParseLuns(mData.Cpu,mTransferred,Luns,&Count);if(EFI_ERROR(Status))return Status;
+   mLunCount=Count;
+   DEBUG((DEBUG_WARN,"SUNUEFI_UFS_LUN_COUNT count=%u\n",(UINT32)Count));
+   for(UINTN I=0;I<Count;++I) {
+-    UINT64 Last;UINT32 Block;
+-    Status=ReadScsi("READ_CAPACITY_16",20+I,Luns[I],PianoUfsReadCapacity16,0,32);
+-    if(!EFI_ERROR(Status))Status=PianoUfsParseCapacity(mData.Cpu,mTransferred,&Last,&Block);
++    UINT64 Last=0;UINT32 Block=0;
++    for(UINT8 Attempt=0;Attempt<5;++Attempt) {
++      Status=ReadScsi("READ_CAPACITY_16",20+(UINT8)I*5+Attempt,Luns[I],PianoUfsReadCapacity16,0,32);
++      if(!EFI_ERROR(Status))Status=PianoUfsParseCapacity(mData.Cpu,mTransferred,&Last,&Block);
++      if(!EFI_ERROR(Status))break;
++      gBS->Stall(20000);
++    }
+     DEBUG((DEBUG_WARN,"SUNUEFI_UFS_CAPACITY lun=%u status=%r last_lba=%lx block_bytes=%u\n",Luns[I],Status,
+       EFI_ERROR(Status)?0:Last,EFI_ERROR(Status)?0:Block));
+     if(EFI_ERROR(Status))return Status;
+@@ -1017,22 +1028,24 @@ EFI_STATUS PianoUfsReadOnlyDmaExperiment(CONST VOID *Fdt) {
+     if(!EFI_ERROR(Status))Status=Submit("QUERY_READ_FULL_DEVICE_DESCRIPTOR",5,FALSE);
+     DEBUG((DEBUG_WARN,"SUNUEFI_UFS_QUERY_FULL_RESULT %r\n",Status));
+   }
+-  if(Status==EFI_DEVICE_ERROR) {
++  {
+     EFI_STATUS Diagnostic=PianoUfsBuildReadPowerMode(mTrl.Cpu,mTrl.Bytes,mUcd.Cpu,mUcd.Bytes,mUcd.DeviceAddress,6);
+     if(!EFI_ERROR(Diagnostic))Diagnostic=Submit("QUERY_READ_CURRENT_POWER_MODE",6,FALSE);
+-    DEBUG((DEBUG_WARN,"SUNUEFI_UFS_POWER_DIAGNOSTIC %r descriptor_stage_failed=1\n",Diagnostic));
+-    if(!EFI_ERROR(Diagnostic) && (mPowerMode==0x22 || mPowerMode==0x33)) {
+-      Status=PianoUfsBuildResumeActive(mTrl.Cpu,mTrl.Bytes,mUcd.Cpu,mUcd.Bytes,mUcd.DeviceAddress,7);
+-      if(!EFI_ERROR(Status))Status=Submit("RESUME_DEVICE_ACTIVE_NO_DATA",7,FALSE);
+-      DEBUG((DEBUG_WARN,"SUNUEFI_UFS_RESUME_ACTIVE_RESULT %r physical_ufs_writes=0\n",Status));
+-      if(!EFI_ERROR(Status)) {
+-        Status=PianoUfsBuildReadPowerMode(mTrl.Cpu,mTrl.Bytes,mUcd.Cpu,mUcd.Bytes,mUcd.DeviceAddress,8);
+-        if(!EFI_ERROR(Status))Status=Submit("QUERY_READ_CURRENT_POWER_MODE",8,FALSE);
+-        if(!EFI_ERROR(Status) && mPowerMode!=0x11 && mPowerMode!=0)Status=EFI_NOT_READY;
++    DEBUG((DEBUG_WARN,"SUNUEFI_UFS_POWER_DIAGNOSTIC %r descriptor_status=%r power_mode=%x\n",Diagnostic,Status,mPowerMode));
++    if(!EFI_ERROR(Diagnostic) && (mPowerMode==0x22 || mPowerMode==0x33 || mPowerMode!=0x11)) {
++      EFI_STATUS Resume=PianoUfsBuildResumeActive(mTrl.Cpu,mTrl.Bytes,mUcd.Cpu,mUcd.Bytes,mUcd.DeviceAddress,7);
++      if(!EFI_ERROR(Resume))Resume=Submit("RESUME_DEVICE_ACTIVE_NO_DATA",7,FALSE);
++      DEBUG((DEBUG_WARN,"SUNUEFI_UFS_RESUME_ACTIVE_RESULT %r physical_ufs_writes=0\n",Resume));
++      if(!EFI_ERROR(Resume)) {
++        Resume=PianoUfsBuildReadPowerMode(mTrl.Cpu,mTrl.Bytes,mUcd.Cpu,mUcd.Bytes,mUcd.DeviceAddress,8);
++        if(!EFI_ERROR(Resume))Resume=Submit("QUERY_READ_CURRENT_POWER_MODE",8,FALSE);
++        if(!EFI_ERROR(Resume) && mPowerMode!=0x11 && mPowerMode!=0)Resume=EFI_NOT_READY;
++      }
++      if(EFI_ERROR(Status) && !EFI_ERROR(Resume)) {
++        Status=QueryDescriptor(9,2);
++        if(!EFI_ERROR(Status))Status=QueryDescriptor(10,((UINT8 *)mUcd.Cpu)[PIANO_UFS_RESPONSE_OFFSET+32]);
++        DEBUG((DEBUG_WARN,"SUNUEFI_UFS_QUERY_AFTER_RESUME %r\n",Status));
+       }
+-      if(!EFI_ERROR(Status))Status=QueryDescriptor(9,2);
+-      if(!EFI_ERROR(Status))Status=QueryDescriptor(10,((UINT8 *)mUcd.Cpu)[PIANO_UFS_RESPONSE_OFFSET+32]);
+-      DEBUG((DEBUG_WARN,"SUNUEFI_UFS_QUERY_AFTER_RESUME %r\n",Status));
+     }
+   }
+   if(!EFI_ERROR(Status))Status=ReadLunCapacity();
+-- 
+2.54.0
+

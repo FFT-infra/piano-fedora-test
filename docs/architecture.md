@@ -1,12 +1,13 @@
 # 架构
 
-SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、首次分区。
+SunUEFI 提供启动链，本仓库加四样：Fedora 后端、F2FS 全链路、首次分区、UEFI UFS 唤醒补丁。
 
 ## 分工
 
 | 层 | 归属 |
 | --- | --- |
 | 合体 BOOT、UEFI、内核编排、打包、安装器 | SunUEFI（锁定） |
+| UEFI UFS 休眠唤醒与 SCSI 重试补丁 | 本仓库（patches/uefi-ufs） |
 | Fedora rootfs 后端与配方 | 本仓库 |
 | F2FS 全链路（内核策略、initramfs、fstab、udev、镜像、安装器） | 本仓库 |
 | 首次分区（上游返回 `NEW_INSTALL_NOT_READY`） | 本仓库 |

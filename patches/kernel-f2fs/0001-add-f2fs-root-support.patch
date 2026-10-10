@@ -1,6 +1,6 @@
-From 0d3185b1e2df6dbac3e598d7e9a68619e70760fa Mon Sep 17 00:00:00 2001
+From 5b5108ca293e3dac510354e6e8c26486c71ddcfa Mon Sep 17 00:00:00 2001
 From: piano-fedora-test <dev@piano.invalid>
-Date: Sat, 10 Oct 2026 01:50:29 +0800
+Date: Sat, 10 Oct 2026 19:39:03 +0800
 Subject: [PATCH] kernel: add F2FS root support to the full candidate
 
 The Fedora dual-boot image mounts an F2FS root partition. The full candidate
@@ -46,7 +46,7 @@ index 0000000..c67b580
 +# CONFIG_F2FS_CHECK_FS is not set
 +# CONFIG_F2FS_FS_COMPRESSION is not set
 diff --git a/tools/build_piano_full_kernel.py b/tools/build_piano_full_kernel.py
-index 22c8424..3009a1c 100644
+index d9dabfa..834d249 100644
 --- a/tools/build_piano_full_kernel.py
 +++ b/tools/build_piano_full_kernel.py
 @@ -35,7 +35,7 @@ REQUIRED={
@@ -58,26 +58,26 @@ index 22c8424..3009a1c 100644
   'USB_CONFIGFS_NCM':'y','DEVTMPFS':'y','DEVTMPFS_MOUNT':'y','UNIX':'y','TMPFS':'y',
   'CGROUPS':'y','INOTIFY_USER':'y','FHANDLE':'y','SECCOMP':'y','SECCOMP_FILTER':'y','ZRAM':'y','BINFMT_MISC':'y',
   'TMPFS_POSIX_ACL':'y','TMPFS_XATTR':'y','SECURITY':'y',
-@@ -45,7 +45,12 @@ FLASH_OVERRIDES={
-  'CONFIG_V4L2_FLASH_LED_CLASS':'m','CONFIG_VIDEO_V4L2_SUBDEV_API':'y',
+@@ -46,7 +46,12 @@ FLASH_OVERRIDES={
  }
  EARLY_CPUCP_OVERRIDES={'CONFIG_QCOM_CPUCP_MBOX':'y'}
--ALLOWED_OVERRIDES={'CONFIG_UHID':'m',**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES}
+ BLUETOOTH_OVERRIDES={'CONFIG_UHID':'m','CONFIG_HID_XIAOMI':'m'}
+-ALLOWED_OVERRIDES={**BLUETOOTH_OVERRIDES,**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES}
 +# Fedora dual-boot mounts an F2FS root partition. The fragment is reviewed
 +# the same way as flash/early-CPUCP: the exact key set is pinned here, so
 +# the file cannot drift into an unreviewed override.
 +F2FS_OVERRIDES={'CONFIG_F2FS_FS':'y','CONFIG_F2FS_FS_XATTR':'y',
 +                'CONFIG_F2FS_FS_POSIX_ACL':'y','CONFIG_F2FS_FS_SECURITY':'y'}
-+ALLOWED_OVERRIDES={'CONFIG_UHID':'m',**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES}
++ALLOWED_OVERRIDES={**BLUETOOTH_OVERRIDES,**FLASH_OVERRIDES,**EARLY_CPUCP_OVERRIDES,**F2FS_OVERRIDES}
  
  
  def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
-@@ -80,13 +85,15 @@ def command_line(fragment,public,root_policy):
+@@ -81,13 +86,15 @@ def command_line(fragment,public,root_policy):
  
  def module_overrides(fragment,kind='bluetooth'):
      lines=[line.strip()for line in fragment.splitlines()if line.strip()and not line.lstrip().startswith('#')]
--    expected={'CONFIG_UHID':'m'}if kind=='bluetooth'else FLASH_OVERRIDES if kind=='flash'else EARLY_CPUCP_OVERRIDES if kind=='early-cpucp'else None
-+    expected=({'CONFIG_UHID':'m'}if kind=='bluetooth'else FLASH_OVERRIDES if kind=='flash'
+-    expected=BLUETOOTH_OVERRIDES if kind=='bluetooth'else FLASH_OVERRIDES if kind=='flash'else EARLY_CPUCP_OVERRIDES if kind=='early-cpucp'else None
++    expected=(BLUETOOTH_OVERRIDES if kind=='bluetooth'else FLASH_OVERRIDES if kind=='flash'
 +              else EARLY_CPUCP_OVERRIDES if kind=='early-cpucp'
 +              else F2FS_OVERRIDES if kind=='f2fs'else None)
      if expected is None or lines!=[key+'='+value for key,value in expected.items()]:raise ValueError('Unexpected '+kind+' configuration fragment')
@@ -90,7 +90,7 @@ index 22c8424..3009a1c 100644
      flash=set(values)&set(FLASH_OVERRIDES)
      if flash and flash!=set(FLASH_OVERRIDES):raise ValueError('Flash requires all four reviewed options')
      return values
-@@ -205,8 +212,10 @@ def main():
+@@ -206,8 +213,10 @@ def main():
      root_command=command_line(fragment.read_text(),public.read_text(),args.root)
      bluetooth=ROOT/'linux/configs/piano-bluetooth.config';flash=ROOT/'linux/configs/piano-flash.config'
      early_cpucp=ROOT/'linux/configs/piano-cpucp-early.config'
@@ -102,7 +102,7 @@ index 22c8424..3009a1c 100644
      env,tools=toolchain();out.mkdir(parents=True,exist_ok=True);artifacts.mkdir(parents=True,exist_ok=True)
      build_locks=[]
      lock_root=ROOT/'build/locks';lock_root.mkdir(parents=True,exist_ok=True)
-@@ -224,7 +233,7 @@ def main():
+@@ -225,7 +234,7 @@ def main():
      verify_source(work,commit)
      tree=text(['git','rev-parse','HEAD^{tree}'],work)
      compiler_checkout(work,compiler,commit,tree)
@@ -111,3 +111,6 @@ index 22c8424..3009a1c 100644
      effective_text=effective_config(root_command,modules)
      effective=out/'piano-full.effective.config';effective.write_text(effective_text)
      command=['make','-C',compiler,'O='+str(out),'ARCH=arm64','LLVM=1','LLVM_IAS=1']
+-- 
+2.54.0
+

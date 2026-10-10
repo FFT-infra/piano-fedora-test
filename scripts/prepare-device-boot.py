@@ -46,8 +46,16 @@ def prepare(stock, tools, host_tool, bundle, slot, source_sha, output):
     marker.write_text("Device BOOT package has not completed.\n")
 
     def command(*args):
-        result = subprocess.check_output([str(native), *map(str, args)], text=True)
-        return json.loads(result)
+        str_args = [str(a) for a in args]
+        for candidate in ([str(native), *str_args],
+                          [str(tools / "native/piano-boot-repack"), *str_args],
+                          ["qemu-x86_64", str(native), *str_args]):
+            try:
+                result = subprocess.check_output(candidate, text=True)
+                return json.loads(result)
+            except OSError:
+                continue
+        raise RuntimeError("failed to execute piano-boot-repack")
 
     source_probe = command("probe", "--input", stock)
     require(source_probe["wrapped"] is False, "source BOOT already contains a wrapper")

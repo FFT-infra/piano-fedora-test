@@ -48,3 +48,18 @@ XATTR / POSIX_ACL / SECURITY 三项对应镜像制作时用 `tar --xattrs --acls
 
 `CONFIG_F2FS_FS_COMPRESSION` 不开：首版不需要，开了会改变磁盘格式特性，
 让镜像与未开启该特性的内核不兼容。
+
+## uefi-ufs
+
+修复 SunUEFI 在 1TB UFS 设备（HyperOS 3.0.305）上冷启动或从 Android 重启时陷入休眠死循环的缺陷。
+
+### 现象与根因
+
+上游 `PianoUfsReadOnlyDma.c` 在 UniPro 链路从 Hibern8 恢复后，仅在“设备描述符读取返回 `EFI_DEVICE_ERROR`”时才向 WLUN `0xD0` 发送 `START_STOP_UNIT` 唤醒 UFS 设备。在 1TB UFS 闪存上，描述符在 Sleep 态（`0x22`/`0x33`）下依然可被成功读取，导致上游完全跳过 `ResumeActive`。紧接着执行的 SCSI `REPORT_LUNS` 因 UFS 设备尚未就绪返回 `CHECK CONDITION: NOT READY (key=02 asc=04 ascq=00)`，且没有任何延时重试，直接触发 `CpuDeadLoop()` 挂起。
+
+### 补丁改动
+
+1. 无论描述符是否读取成功，始终核对当前电源模式；若非 Active（`0x11`），强制发起 `PianoUfsBuildResumeActive` 唤醒设备。
+2. 为 `REPORT_LUNS` 增加 5 次有界重试，单次延时 50ms 并重试唤醒。
+3. 为 `READ_CAPACITY_16` 增加 5 次有界重试，单次延时 20ms。
+

@@ -57,6 +57,11 @@ jobs:
           git -C sunuefi checkout "$REF"
           echo "sunuefi at $(git -C sunuefi rev-parse HEAD)"
 
+      - name: Apply project patches to SunUEFI
+        run: |
+          set -euo pipefail
+          python3 scripts/apply-patches.py --sunuefi sunuefi
+
       - name: Build UEFI product firmware in the container
         run: |
           set -euo pipefail
