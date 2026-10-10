@@ -1,0 +1,15 @@
+diff --git a/uefi/handoff/bootselect/BootSelect.ld b/uefi/handoff/bootselect/BootSelect.ld
+index 6526eff..6181457 100644
+--- a/uefi/handoff/bootselect/BootSelect.ld
++++ b/uefi/handoff/bootselect/BootSelect.ld
+@@ -3,8 +3,8 @@ ENTRY(_start)
+ SECTIONS {
+   . = 0;
+   .text : { KEEP(*(.text.entry)) *(.text*) }
+-  .rodata : ALIGN(16) { *(.rodata*) }
+-  .data : ALIGN(16) { *(.data*) }
++  .rodata : ALIGN(16) { *(.rodata*) . = ALIGN(4); }
++  .data : ALIGN(16) { *(.data*) . = ALIGN(4); }
+   . = ALIGN(16);
+   .stack (NOLOAD) : {
+     __stack_start = .;

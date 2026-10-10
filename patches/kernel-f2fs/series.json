@@ -32,6 +32,14 @@
         "tools/build_piano_full_kernel.py": "c6eb1a3004cb790f664e3f0b3e1819e3bd764f3bfc56ed329efd480007d78e58"
       },
       "creates": []
+    },
+    {
+      "file": "0004-align-selector-rodata.patch",
+      "summary": "强制选择器链接脚本中 rodata 与 data 段在末尾以 4 字节对齐，避免 objcopy 输出未对齐二进制导致模块校验失败",
+      "targets": {
+        "uefi/handoff/bootselect/BootSelect.ld": "f6a783ef0e265f218cd367dea1bbf6b08bc3e31d0ceb2957df453263774e9a6e"
+      },
+      "creates": []
     }
   ]
 }
