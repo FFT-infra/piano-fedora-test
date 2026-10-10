@@ -24,7 +24,7 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 
    制镜像需要挂载 F2FS。GitHub runner 的内核默认不带 f2fs，装上 `linux-modules-extra` 后 `modprobe f2fs` 可用，挂载式往返验证在 CI 上已跑通（`IMAGE_VERIFIED`，xattr 核对通过，fsck 退出码 0）。
 
-   离线导入 `sload.f2fs -P` 不需要挂载，但它只保留 owner 与 setuid，**不保留 user xattr**——已在 192.168.5.11 实测确认。所以制镜像用挂载 + `tar --xattrs --acls`，不用 sload。
+   离线导入 `sload.f2fs -P` 不需要挂载，但它只保留 owner 与 setuid，**不保留 user xattr**，已在 192.168.5.11 实测确认。所以制镜像用挂载 + `tar --xattrs --acls`，不用 sload。
 
 ## CI 分工
 
@@ -32,11 +32,16 @@ SunUEFI 提供启动链，本仓库加三样：Fedora 后端、F2FS 全链路、
 | --- | --- | --- |
 | `host-check.yml` | push / PR | 离线检查，`make test` |
 | `build-rootfs.yml` | 手动 | Fedora rootfs 树 + `.tar.zst`，上传 artifact |
+| `build-kernel.yml` | 手动 | F2FS/SELinux Image、完整模块与匹配 SDK |
+| `build-uefi.yml` | 手动 | UEFI 产品与原始 manifest |
+| `build-mesa.yml` | 手动 | Fedora 原生 A830v1 Mesa RPM 与实际驱动检查记录 |
+| `build-device-runtime.yml` | 手动 | Fedora 原生设备运行时与匹配内核 ABI 的外部模块 |
+| `build-initramfs.yml` | 手动 | 独立 initramfs 构建与检查；正式 bundle 消费 build-image 的 initramfs |
 | `verify-f2fs.yml` | push / PR | 小 fixture 的 F2FS 元数据往返验证 |
-| `build-image.yml` | 手动 | F2FS root 镜像 + ESP 镜像 + manifest |
+| `build-image.yml` | 手动 | 同一次集成的设备 rootfs、initramfs、F2FS 镜像及相互绑定的 manifest |
 | `build-bundle.yml` | 手动 | 汇总内核、UEFI、rootfs、镜像为部署包 |
 
-仓库为 public，artifact 与 Actions 分钟数不计费。
+产物由各 workflow 显式上传，上传失败不计为交付完成。
 
 产物清单与部署包结构见 [部署产物](artifacts.md)。
 3. 首次分区。只读探测本机并生成计划，用模拟 GPT 在主机上验证。

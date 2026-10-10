@@ -4,7 +4,7 @@
 
 SunUEFI 按 commit 锁定为上游，本仓库只带三样增量：Fedora 后端、F2FS 全链路、首次分区。
 
-当前状态：Fedora 后端的 plan 路径可用，execute 未在真实环境跑过。
+Fedora 44/GNOME、A830v1 Mesa、F2FS/SELinux 内核与完整主机构建包已在 GitHub Actions 构建并核对。产物尚未真机验证，交付内容和构建顺序见 [产物说明](docs/artifacts.md)。
 
 ## 用法
 
