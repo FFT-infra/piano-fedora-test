@@ -1,19 +1,14 @@
-From 5dc876ccd054f88ac48a6c18639cf1d0bb7568f3 Mon Sep 17 00:00:00 2001
-From: piano-fedora-test <dev@piano.invalid>
-Date: Sat, 10 Oct 2026 19:39:03 +0800
+From e7ece3f3ef6a31580abd897d5c13da99ce568f1a Mon Sep 17 00:00:00 2001
+From: xinyang <xinyangmn@gmail.com>
+Date: Sat, 10 Oct 2026 20:03:35 +0800
 Subject: [PATCH] kernel: select F2FS and the Fedora SELinux policy explicitly
 
-Keep the immutable public kernel configs and hardware requirements. Add two
-explicit build options: --root-fstype f2fs and --fedora-policy. The latter
-requires SECURITY_NETWORK, SECURITY_SELINUX and the SELinux LSM together;
-partial security overrides still fail validation. Effective configuration and
-tool hashes remain in the sealed kernel manifest.
 ---
  tools/build_piano_full_kernel.py | 17 +++++++++++++----
  1 file changed, 13 insertions(+), 4 deletions(-)
 
 diff --git a/tools/build_piano_full_kernel.py b/tools/build_piano_full_kernel.py
-index 834d249..aae1bd7 100644
+index 834d249..119fc31 100644
 --- a/tools/build_piano_full_kernel.py
 +++ b/tools/build_piano_full_kernel.py
 @@ -51,7 +51,9 @@ BLUETOOTH_OVERRIDES={'CONFIG_UHID':'m','CONFIG_HID_XIAOMI':'m'}
@@ -64,17 +59,23 @@ index 834d249..aae1bd7 100644
      args=parser.parse_args()
      if not 1<=args.jobs<=8:raise SystemExit('Full candidate jobs must be 1..8')
      work,out,artifacts=(path.resolve()for path in (args.worktree,args.build_dir,args.artifacts));commit=args.commit
-@@ -210,7 +217,9 @@ def main():
+@@ -210,13 +217,15 @@ def main():
      if compiler==work or compiler.resolve()!=compiler:
          raise ValueError('Compiler checkout must be a separate physical build-owned directory')
      verify_source(work,commit);public=work/'arch/arm64/configs/piano_rootfs.config';fragment=ROOT/'linux/configs/piano-full.config'
 -    root_command=command_line(fragment.read_text(),public.read_text(),args.root)
 +    root_command=command_line(fragment.read_text(),public.read_text(),args.root,args.root_fstype)
-+    if args.fedora_policy:
-+        modules={**modules,**FEDORA_OVERRIDES}
      bluetooth=ROOT/'linux/configs/piano-bluetooth.config';flash=ROOT/'linux/configs/piano-flash.config'
      early_cpucp=ROOT/'linux/configs/piano-cpucp-early.config'
      f2fs=ROOT/'linux/configs/piano-f2fs.config'
+     modules={**module_overrides(bluetooth.read_text()),**module_overrides(flash.read_text(),'flash'),
+              **module_overrides(early_cpucp.read_text(),'early-cpucp'),
+              **module_overrides(f2fs.read_text(),'f2fs')}
++    if args.fedora_policy:
++        modules={**modules,**FEDORA_OVERRIDES}
+     env,tools=toolchain();out.mkdir(parents=True,exist_ok=True);artifacts.mkdir(parents=True,exist_ok=True)
+     build_locks=[]
+     lock_root=ROOT/'build/locks';lock_root.mkdir(parents=True,exist_ok=True)
 -- 
 2.54.0
 
