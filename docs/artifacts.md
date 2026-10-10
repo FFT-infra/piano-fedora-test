@@ -26,7 +26,7 @@ F2FS 镜像同时绑定 rootfs、内核、运行时、Mesa 和 initramfs 五份�
 
 镜像先卸载，再运行 `fsck.f2fs -f --dry-run`，并核对检查前后镜像摘要不变。随后以 `ro,norecovery` 挂载读回，卸载后才生成最终镜像摘要。仅有 fsck 退出 0 或小 fixture 通过不证明完整交付通过。
 
-容量是构建参数。当前 8192 MiB 是测试镜像容量，product.json 的最终分区容量仍未选定；没有 F2FS 自动扩容承诺，也没有对 userdata 的写入。
+通用交付包的 8192 MiB 是测试镜像容量。本机目标容量已按真实 GPT 对半计算并记录在 product.json；prepare-install.yml 在独立副本中完成离线扩容、设备配置与完整读回后输出 sparse 传输文件，不依赖首次开机自动扩容。
 
 ## 交付内容
 
@@ -44,4 +44,4 @@ Linux boot.img 是 ESP 上的 Linux 载荷。包含当前 Android 内核的合�
 
 2026-10-10 的完整 Actions 构建及下载后的本地校验已通过，包括组件清单摘要、压缩 root 展开后的 8 GiB 大小与 SHA256，以及 ESP 载荷和 boot.img 组件。没有任何本次产物在平板上启动过，首次分区、恢复材料、本机 BOOT 输入和 Android 数据处理选择仍属于部署前的独立要求。
 
-安装适配尚未完成：上游安装器仍按 ext4 包结构处理 root，本仓库尚未提供消费这份 F2FS 交付包的安装入口。首次分区工具当前只生成计划，实际初装与本机 BOOT 包装还需在分区容量和 Android 数据处理方案确定后完成。
+上游安装器保留 ext4 合同；本仓库新增独立的 F2FS 初装入口和本机 BOOT 文件准备入口。工具路径、Actions 材料、破坏性操作门禁和真机验收边界见[首次安装](installation.md)。新增实现的实际构建、包装和设备验收状态分别以对应 manifest 与会话记录为准。

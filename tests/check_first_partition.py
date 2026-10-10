@@ -76,6 +76,43 @@ def main():
             check(changes["userdata"]["new_last"] < changes["sunuefi_root"]["first"], "userdata must not overlap root")
             check(changes["sunuefi_root"]["last"] < changes["sunuefi_esp"]["first"], "root must not overlap esp")
 
+        result = run("--dump", str(dump), "--equal-split")
+        check(result.returncode == 0, f"equal split should succeed: {result.stderr}")
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            check(data["allocation"] == "equal-userdata-after-esp", "equal split policy must be explicit")
+            check(data["capacity"]["linux_root_mib"] == 479990, "real GPT half capacity must not be capped at 256 GiB")
+            check(data["capacity"]["android_userdata_mib"] == 479989, "Android must retain its aligned half")
+            check(data["capacity"]["equal_split_difference_bytes"] <= 2 * 1024**2, "rounding must stay within two alignment units")
+            check(data["android_data_preserved"] is False, "destructive userdata handling must be explicit")
+            check(all(c["partition"] <= 64 for c in data["changes"]), "new entries must respect actual GPT capacity")
+            check(len(data["baseline_sha256"]) == 64, "plan must bind its source geometry")
+
+        large = run("--dump", str(dump), "--root-mib", "480000")
+        check(large.returncode == 0, "explicit root above 256 GiB must be accepted if it fits")
+        for replacement, message in (
+            (REAL_GPT.replace("64 entries", "4096 entries"), "GPT tables overlap usable area"),
+            (REAL_GPT.replace("64 entries", "4 entries").replace("  32 ", "   2 ")
+                     .replace("  33 ", "   3 ").replace("  34 ", "   4 "), "no free GPT slots"),
+            (REAL_GPT.replace("34         3632128", "33         3632128"), "duplicate partition index"),
+            (REAL_GPT.replace("34         3632128", "34         3632129"), "unaligned userdata start"),
+            (REAL_GPT.replace("249518074   938.0", "249518070   938.0"), "userdata must fill tail"),
+            (REAL_GPT.replace("  34 ", "  65 "), "entry index exceeds table"),
+        ):
+            bad = tmp / "invalid.txt"
+            bad.write_text(replacement, encoding="utf-8")
+            check(run("--dump", str(bad), "--equal-split").returncode == 2, message + " must be rejected")
+
+        unnamed = tmp / "unnamed.txt"
+        unnamed.write_text(REAL_GPT +
+                           "   2               8              15   32.0 KiB    FFFF\n", encoding="utf-8")
+        result = run("--dump", str(unnamed), "--equal-split")
+        check(result.returncode == 0, "unnamed occupied GPT entries must remain visible")
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            check(any(p["number"] == 2 and p["name"] == "" for p in data["original_partitions"]), "unnamed entry was omitted")
+            check(all(c["partition"] != 2 for c in data["changes"]), "unnamed occupied entry was reused")
+
         # userdata 太小、放不下 ESP+root：拒绝。
         # 用一个小盘做 fixture，避免依赖真实盘的容量。
         small = tmp / "small.txt"

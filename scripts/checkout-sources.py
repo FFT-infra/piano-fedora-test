@@ -37,7 +37,7 @@ def checkout(url, commit, destination, full_history=False):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--output", type=Path, required=True)
-    ap.add_argument("--mode", choices=("check", "boot", "device", "graphics"), default="check")
+    ap.add_argument("--mode", choices=("check", "boot", "device", "graphics", "installer"), default="check")
     ap.add_argument("--kernel", action="store_true")
     args = ap.parse_args()
     output = args.output.resolve()
@@ -50,14 +50,18 @@ def main():
     names = [] if args.mode == "check" else ["debian-piano-current"]
     if args.mode == "graphics":
         names = ["piano-mesa-current"]
+    if args.mode == "installer":
+        names = ["Mu-Silicium", "Mu-Silicium/Mu_Basecore", "simple-init"]
     if args.mode == "device":
         names += ["piano-firmware-current", "piano-sensors-current", "audioreach-topology", "v4l2loopback"]
     for name in names:
         path = "upstream/" + name
-        registered = git(sun, "ls-files", "--stage", "--", path).split()
+        owner = sun if "/" not in name else sun / "upstream" / name.rsplit("/", 1)[0]
+        link = path if owner == sun else name.rsplit("/", 1)[1]
+        registered = git(owner, "ls-files", "--stage", "--", link).split()
         if len(registered) < 2 or registered[0] != "160000" or registered[1] != upstream[name]["commit"]:
             raise ValueError(f"submodule registration differs from the upstream lock: {name}")
-        subprocess.run(["git", "-C", str(sun), "submodule", "update", "--init", "--depth=1", path], check=True)
+        subprocess.run(["git", "-C", str(owner), "submodule", "update", "--init", "--depth=1", link], check=True)
         if git(sun / path, "rev-parse", "HEAD") != upstream[name]["commit"]:
             raise ValueError(f"submodule pin differs: {name}")
     if args.kernel:

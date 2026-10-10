@@ -1,0 +1,161 @@
+name: prepare-install
+
+# 构建安装材料与真实 F2FS 扩容验证；不连接或写入平板。
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_run:
+        description: "已成功且完整验证的 deploy-bundle run"
+        required: true
+        default: "38020941586"
+      root_size_mib:
+        description: "Linux root MiB（留空使用 product.json 中已核对的容量）"
+        required: false
+        default: ""
+      android_slot:
+        description: "当前 Android 槽位"
+        type: choice
+        options: ["_b", "_a"]
+        default: "_b"
+      ssh_public_key:
+        description: "本次设备管理用 Ed25519 公钥（只接受公钥）"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  root-capacity:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install image tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq f2fs-tools zstd attr
+          sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" || sudo apt-get install -y -qq linux-modules-extra-azure
+          sudo modprobe f2fs
+      - uses: actions/download-artifact@v4
+        with:
+          name: deploy-bundle
+          path: build/in/bundle
+          run-id: ${{ inputs.bundle_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify a real filesystem expansion and sparse roundtrip
+        env:
+          TMPDIR: ${{ github.workspace }}/build/tmp
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          sudo env TMPDIR="$TMPDIR" python3 tests/check_root_capacity.py --mount
+      - name: Prepare and fully verify the selected capacity
+        env:
+          ROOT_SIZE_MIB: ${{ inputs.root_size_mib }}
+          ANDROID_SLOT: ${{ inputs.android_slot }}
+          SSH_PUBLIC_KEY: ${{ inputs.ssh_public_key }}
+          TMPDIR: ${{ github.workspace }}/build/tmp
+        run: |
+          set -euo pipefail
+          (cd build/in/bundle && sha256sum -c SHA256SUMS)
+          if [ -z "$ROOT_SIZE_MIB" ]; then
+            ROOT_SIZE_MIB=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["root_size_mib"])')
+          fi
+          python3 -c 'import os,pathlib; pathlib.Path("build/device-access.pub").write_text(os.environ["SSH_PUBLIC_KEY"].strip()+"\n")'
+          sudo env TMPDIR="$TMPDIR" python3 scripts/prepare-root-capacity.py \
+            --bundle build/in/bundle --size-mib "$ROOT_SIZE_MIB" --output build/root-install \
+            --android-slot "$ANDROID_SLOT" --ssh-public-key build/device-access.pub
+          sudo chown -R "$(id -u):$(id -g)" build/root-install
+          (cd build/root-install && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: root-install
+          path: build/root-install/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  boot-tools:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the native and selector toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang lld llvm git zstd python3
+      - name: Fetch exact boot source dependencies
+        run: python3 scripts/checkout-sources.py --output build/installer-sources --mode installer
+      - uses: actions/download-artifact@v4
+        with:
+          name: uefi-product
+          path: build/in/uefi
+          run-id: 37959011346
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: deploy-bundle
+          path: build/in/bundle
+          run-id: ${{ inputs.bundle_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reuse the sealed UEFI core and compile its native tools
+        env:
+          SUNUEFI_TOOLCHAIN_ROOT: /usr
+          TMPDIR: ${{ github.workspace }}/build/tmp
+        run: |
+          set -euo pipefail
+          mkdir -p build/product "$TMPDIR"
+          tar -I zstd -xf build/in/uefi/uefi-product.tar.zst -C build/product
+          cmp build/product/PianoUEFI-product.img build/in/bundle/PianoUEFI-product.img
+          python3 build/installer-sources/sunuefi/tools/prepare_android_module.py \
+            --product build/product --output build/boot-tools --cc gcc --package none
+          python3 build/installer-sources/sunuefi/tools/build_boot_request.py \
+            --output build/boot-tools/boot-request --cc gcc
+          cp -a build/product build/boot-tools/product
+          cp sources.lock.json build/boot-tools/sources.lock.json
+          python3 tests/check_installer.py --sunuefi build/installer-sources/sunuefi
+          python3 scripts/export-installer.py --sunuefi build/installer-sources/sunuefi --output build/boot-tools/installer
+          python3 build/boot-tools/installer/scripts/install-f2fs.py --help
+          (cd build/boot-tools/installer && sha256sum -c SHA256SUMS)
+          python3 -m unittest discover -s build/installer-sources/sunuefi/tests/unit -p test_boot_request.py -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-tools
+          path: build/boot-tools/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  host-boot-tool:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native compiler
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git python3
+      - name: Fetch pinned native sources
+        run: python3 scripts/checkout-sources.py --output build/host-boot-sources --mode installer
+      - name: Build the portable host repacker
+        env:
+          TMPDIR: ${{ github.workspace }}/build/tmp
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+          chmod +x scripts/static-cc.sh
+          python3 build/host-boot-sources/sunuefi/tools/build_boot_repack.py \
+            --arch host --cc "$GITHUB_WORKSPACE/scripts/static-cc.sh" --output build/host-boot-tool
+          file build/host-boot-tool/piano-boot-repack
+          build/host-boot-tool/piano-boot-repack status
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-boot-tool
+          path: build/host-boot-tool/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

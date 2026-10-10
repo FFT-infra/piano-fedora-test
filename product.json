@@ -16,7 +16,8 @@
     "root_label": "PIANOROOT",
     "esp_label": "SUNUEFI_ESP",
     "esp_size_mib": 512,
-    "root_size_mib": null
+    "root_size_mib": 479990,
+    "partition_allocation": "equal-userdata-after-esp"
   },
-  "note": "releasever=44 与 fedora-sheng 的默认一致，镜像可拉取。root_size_mib 仍为 null：它决定分区方案，需要按实际可用空间定，不猜。"
+  "note": "root_size_mib 来自 2026-10-10 本机 4 KiB GPT：保留 Android 固定分区，userdata 扣除 ESP 后对半分。执行安装前必须与实时 GPT 重算结果一致。"
 }
