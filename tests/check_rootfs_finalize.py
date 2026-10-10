@@ -26,6 +26,16 @@ def fixture(root):
     return alternatives, man
 
 
+def launcher_fixture(root):
+    binary = root / "usr/bin"
+    target = root / "usr/share/org.gnome.Weather/org.gnome.Weather"
+    binary.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"weather launcher")
+    (binary / "gnome-weather").symlink_to("../../../../../../../usr/share/org.gnome.Weather/org.gnome.Weather")
+    return binary, target
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -39,7 +49,21 @@ def main():
         assert (man / "present.1.gz").read_bytes() == b"manual"
         assert (alternatives / "runtime").is_symlink(), "runtime failures must remain visible to the packager"
         assert finalizer.prune_missing_manpage_links(root) == [], "cleanup must be idempotent"
-    print("OK: missing manual links pruned; live manuals and runtime link guards preserved")
+        binary, target = launcher_fixture(root)
+        changes = finalizer.normalize_launcher_links(root)
+        assert set(changes) == {"usr/bin/gnome-weather"}, changes
+        assert (binary / "gnome-weather").resolve() == target
+        assert (binary / "gnome-weather").read_bytes() == b"weather launcher"
+        assert finalizer.normalize_launcher_links(root) == {}
+        (binary / "bad").symlink_to("../../../etc/passwd")
+        try:
+            finalizer.normalize_launcher_links(root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an unexpected runtime escape was normalized")
+        assert (binary / "bad").is_symlink()
+    print("OK: missing manuals pruned, launcher normalized and runtime path guards preserved")
 
 
 if __name__ == "__main__":

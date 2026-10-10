@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,6 +16,39 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def chroot(root, *command):
     return subprocess.check_output(["chroot", str(root), *command], text=True)
+
+
+def normalize_launcher_links(root):
+    """收敛 Fedora 启动器中依赖 guest 根处 .. 截断的相对链接。"""
+    binary = safe_destination(root, "usr/bin")
+    changes = {}
+    for path in sorted(binary.iterdir()):
+        if not path.is_symlink() or path.readlink().is_absolute():
+            continue
+        target, depth, escaped = str(path.readlink()), 2, False
+        for part in Path(target).parts:
+            if part == "..":
+                escaped |= depth == 0
+                depth = max(0, depth - 1)
+            else:
+                depth += 1
+        if not escaped:
+            continue
+        parts = Path(target).parts
+        leading = 0
+        while leading < len(parts) and parts[leading] == "..":
+            leading += 1
+        if leading < 3 or parts[leading:leading + 2] != ("usr", "share") or ".." in parts[leading:]:
+            raise ValueError("unexpected escaping launcher link: " + path.name)
+        normalized = posixpath.normpath("/usr/bin/" + target)
+        resolved = guest_resolve(root, normalized)
+        if not normalized.startswith("/usr/share/") or not resolved.is_relative_to(root / "usr/share") or not resolved.is_file():
+            raise ValueError("unexpected escaping launcher link: " + path.name)
+        relative = posixpath.relpath(normalized, "/usr/bin")
+        path.unlink()
+        path.symlink_to(relative)
+        changes[path.relative_to(root).as_posix()] = {"original": target, "target": relative}
+    return changes
 
 
 def prune_missing_manpage_links(root):
@@ -110,6 +144,7 @@ def main():
         dbus.unlink()
     dbus.parent.mkdir(parents=True, exist_ok=True)
     dbus.symlink_to("/etc/machine-id")
+    normalized_launchers = normalize_launcher_links(root)
     removed_manpages = prune_missing_manpage_links(root)
     packages = chroot(root, "rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n")
     output.mkdir(parents=True, exist_ok=True)
@@ -128,6 +163,7 @@ def main():
               "packages_sha256": sha256(output / "packages.tsv"), "enabled_services": services,
               "login": "piano autologin; password locked; owner provisions credentials",
               "device_configuration_required": ["/etc/piano/boot-request.json", "active Android slot for sensors"],
+              "normalized_launcher_links": normalized_launchers,
               "removed_manpage_links": removed_manpages, "device_tested": False}
     (output / "manifest.json").write_text(json.dumps(result, indent=2) + "\n")
 

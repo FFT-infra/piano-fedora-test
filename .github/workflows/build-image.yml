@@ -133,6 +133,15 @@ jobs:
           set -euo pipefail
           sudo python3 scripts/finalize-fedora-rootfs.py --rootfs build/device-root/rootfs \
             --kernel build/kernel --runtime build/runtime --mesa build/mesa --output build/device-root
+          sudo python3 - <<'PY'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0, 'build/sources/sunuefi/tools')
+          import package_release
+          release = json.loads(Path('build/kernel/manifest.json').read_text())['kernel_release']
+          rows = package_release.scan_root(Path('build/device-root/rootfs').resolve(), release)
+          print('OK: upstream package root preflight:', len(rows), 'entries')
+          PY
           release=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["releasever"])')
           sudo podman run --rm --privileged -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
