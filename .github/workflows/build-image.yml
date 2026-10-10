@@ -54,6 +54,7 @@ jobs:
           python3 scripts/resolve-artifact-run.py --workflow build-rootfs.yml --artifact "$ROOTFS_ARTIFACT" --output-key rootfs_run
           python3 scripts/resolve-artifact-run.py --workflow build-kernel.yml --artifact "$KERNEL_ARTIFACT" --artifact kernel-sdk-7.2.9 --output-key kernel_run
           python3 scripts/resolve-artifact-run.py --workflow build-device-runtime.yml --artifact "$RUNTIME_ARTIFACT" --output-key runtime_run
+          python3 scripts/resolve-artifact-run.py --workflow build-mesa.yml --artifact piano-fedora-mesa --output-key mesa_run
 
       - uses: actions/download-artifact@v4
         with:
@@ -76,13 +77,21 @@ jobs:
           run-id: ${{ steps.source.outputs.runtime_run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: piano-fedora-mesa
+          path: build/in/mesa
+          run-id: ${{ steps.source.outputs.mesa_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Unpack into separate component directories
         run: |
           set -euo pipefail
-          mkdir -p build/device-root build/kernel build/runtime build/image-tmp
+          mkdir -p build/device-root build/kernel build/runtime build/mesa build/image-tmp
           sudo tar -I zstd --numeric-owner --xattrs --xattrs-include='*' --acls --selinux -xf build/in/base/*.tar.zst -C build/device-root
           tar -I zstd -xf build/in/kernel/*.tar.zst -C build/kernel
           tar -I zstd -xf build/in/runtime/*.tar.zst -C build/runtime
+          tar -I zstd -xf build/in/mesa/*.tar.zst -C build/mesa
           python3 scripts/checkout-sources.py --output build/sources --mode boot
 
       - name: Validate and stage the sealed kernel payload
@@ -94,10 +103,12 @@ jobs:
           kernel_hash = hashlib.sha256(Path('build/kernel/manifest.json').read_bytes()).hexdigest()
           runtime = json.loads(Path('build/runtime/manifest.json').read_text())
           assert runtime['kernel_manifest_sha256'] == kernel_hash, 'runtime/kernel mismatch'
-          for name, item in runtime['rpms'].items():
-              p = Path('build/runtime/rpms') / name
-              assert p.is_file() and p.stat().st_size == item['bytes']
-              assert hashlib.sha256(p.read_bytes()).hexdigest() == item['sha256'], name
+          for component in ('runtime', 'mesa'):
+              manifest = json.loads(Path(f'build/{component}/manifest.json').read_text())
+              for name, item in manifest['rpms'].items():
+                  p = Path(f'build/{component}/rpms') / name
+                  assert p.is_file() and p.stat().st_size == item['bytes']
+                  assert hashlib.sha256(p.read_bytes()).hexdigest() == item['sha256'], name
           PY
           sudo python3 scripts/stage-rootfs-payload.py --rootfs build/device-root/rootfs --kernel build/kernel --sunuefi build/sources/sunuefi
           sudo python3 scripts/apply-rootfs-policy.py --rootfs build/device-root/rootfs
@@ -113,14 +124,15 @@ jobs:
             "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
               dnf -y --installroot=/workspace/build/device-root/rootfs --releasever="$PIANO_RELEASE" --use-host-config \
                 --setopt=install_weak_deps=False --setopt=localpkg_gpgcheck=0 install \
-                /workspace/build/runtime/rpms/*.rpm erofs-utils device-mapper python3-gobject
+                /workspace/build/runtime/rpms/*.rpm /workspace/build/mesa/rpms/*.rpm \
+                erofs-utils device-mapper python3-gobject
             '
 
       - name: Finalize services and the rootfs identity
         run: |
           set -euo pipefail
           sudo python3 scripts/finalize-fedora-rootfs.py --rootfs build/device-root/rootfs \
-            --kernel build/kernel --runtime build/runtime --output build/device-root
+            --kernel build/kernel --runtime build/runtime --mesa build/mesa --output build/device-root
           release=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["releasever"])')
           sudo podman run --rm --privileged -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
@@ -143,6 +155,16 @@ jobs:
           sudo env TMPDIR="$GITHUB_WORKSPACE/build/image-tmp" python3 scripts/build-f2fs-image.py \
             --rootfs build/device-root/rootfs --size-mib "$ROOT_SIZE" \
             --output pianoroot.f2fs.img --verify --manifest root-image-manifest.json
+          sudo python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          p = Path('root-image-manifest.json')
+          m = json.loads(p.read_text())
+          for name, folder in (('rootfs', 'device-root'), ('kernel', 'kernel'),
+                               ('runtime', 'runtime'), ('mesa', 'mesa'), ('initramfs', 'initramfs')):
+              m[name + '_manifest_sha256'] = hashlib.sha256(Path(f'build/{folder}/manifest.json').read_bytes()).hexdigest()
+          p.write_text(json.dumps(m, indent=2) + '\n')
+          PY
           cat root-image-manifest.json
           zstd -10 -T0 -o pianoroot.f2fs.img.zst pianoroot.f2fs.img
 
@@ -151,6 +173,7 @@ jobs:
           KERNEL_RUN: ${{ steps.source.outputs.kernel_run }}
           ROOTFS_RUN: ${{ steps.source.outputs.rootfs_run }}
           RUNTIME_RUN: ${{ steps.source.outputs.runtime_run }}
+          MESA_RUN: ${{ steps.source.outputs.mesa_run }}
         run: |
           set -euo pipefail
           sudo tar --format=pax --numeric-owner --xattrs --xattrs-include='*' --acls --selinux \
@@ -158,12 +181,14 @@ jobs:
           tar -I 'zstd -6 -T0' -cf initramfs.tar.zst -C build/initramfs .
           cp build/kernel/manifest.json kernel-manifest.json
           cp build/runtime/manifest.json runtime-manifest.json
+          cp build/mesa/manifest.json mesa-manifest.json
+          sudo cp build/device-root/manifest.json rootfs-manifest.json
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           Path('source-runs.json').write_text(json.dumps({
               'kernel_run': os.environ['KERNEL_RUN'], 'rootfs_run': os.environ['ROOTFS_RUN'],
-              'runtime_run': os.environ['RUNTIME_RUN']}, indent=2) + '\n')
+              'runtime_run': os.environ['RUNTIME_RUN'], 'mesa_run': os.environ['MESA_RUN']}, indent=2) + '\n')
           PY
           sudo chown "$(id -u):$(id -g)" device-root.tar.zst root-image-manifest.json
           sha256sum pianoroot.f2fs.img.zst device-root.tar.zst initramfs.tar.zst > image-SHA256SUMS
@@ -178,6 +203,8 @@ jobs:
             initramfs.tar.zst
             kernel-manifest.json
             runtime-manifest.json
+            mesa-manifest.json
+            rootfs-manifest.json
             image-SHA256SUMS
             source-runs.json
           if-no-files-found: error

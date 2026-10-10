@@ -37,7 +37,7 @@ def checkout(url, commit, destination, full_history=False):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--output", type=Path, required=True)
-    ap.add_argument("--mode", choices=("check", "boot", "device"), default="check")
+    ap.add_argument("--mode", choices=("check", "boot", "device", "graphics"), default="check")
     ap.add_argument("--kernel", action="store_true")
     args = ap.parse_args()
     output = args.output.resolve()
@@ -48,6 +48,8 @@ def main():
     checkout(lock["sunuefi"]["url"], lock["sunuefi"]["commit"], sun)
     upstream = json.loads((sun / "sources.lock.json").read_text())
     names = [] if args.mode == "check" else ["debian-piano-current"]
+    if args.mode == "graphics":
+        names = ["piano-mesa-current"]
     if args.mode == "device":
         names += ["piano-firmware-current", "piano-sensors-current", "audioreach-topology", "v4l2loopback"]
     for name in names:

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from piano_artifacts import guest_resolve, inspect_kernel, safe_destination, sha256
+from piano_artifacts import guest_resolve, inspect_kernel, safe_destination, safe_relative, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +38,7 @@ def prune_missing_manpage_links(root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    for name in ("rootfs", "kernel", "runtime", "output"):
+    for name in ("rootfs", "kernel", "runtime", "mesa", "output"):
         ap.add_argument("--" + name, required=True, type=Path)
     args = ap.parse_args()
     root, kernel, runtime, output = [getattr(args, name).resolve() for name in ("rootfs", "kernel", "runtime", "output")]
@@ -48,6 +48,18 @@ def main():
     runtime_meta = json.loads((runtime / "manifest.json").read_text())
     if runtime_meta["kernel_manifest_sha256"] != kernel_hash:
         raise ValueError("runtime and rootfs select different kernel builds")
+    mesa_dir = args.mesa.resolve()
+    mesa = json.loads((mesa_dir / "manifest.json").read_text())
+    if (mesa.get("status"), mesa.get("releasever"), mesa.get("arch"), mesa.get("chip_id")) != (
+            "FEDORA_MESA_BUILT_NOT_DEVICE_VERIFIED", "44", "aarch64", "0xffff44050001"):
+        raise ValueError("Mesa is not the verified native piano build")
+    for name, row in mesa["packages"].items():
+        if chroot(root, "rpm", "-q", "--qf", "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}", name).strip() != row["nevra"]:
+            raise ValueError("installed Mesa package differs: " + name)
+    for relative, digest in mesa["driver_files"].items():
+        safe_relative(relative)
+        if sha256(guest_resolve(root, "/" + relative)) != digest:
+            raise ValueError("installed A830v1 driver differs: " + relative)
     for row in m["modules"]:
         path = root / "usr" / row["path"]
         if sha256(path) != row["sha256"]:
@@ -112,6 +124,7 @@ def main():
               "kernel_release": m["kernel_release"], "kernel_commit": m["source_commit"],
               "kernel_manifest_sha256": kernel_hash, "root_policy": "LABEL=PIANOROOT",
               "root_fstype": "f2fs", "runtime_manifest_sha256": sha256(runtime / "manifest.json"),
+              "mesa_manifest_sha256": sha256(mesa_dir / "manifest.json"),
               "packages_sha256": sha256(output / "packages.tsv"), "enabled_services": services,
               "login": "piano autologin; password locked; owner provisions credentials",
               "device_configuration_required": ["/etc/piano/boot-request.json", "active Android slot for sensors"],

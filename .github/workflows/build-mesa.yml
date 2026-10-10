@@ -1,0 +1,58 @@
+name: build-mesa
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mesa:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the native builder and locked patches
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman zstd python3 git
+          python3 scripts/checkout-sources.py --output build/sources --mode graphics
+
+      - name: Rebuild the Fedora source RPM with piano support
+        run: |
+          set -euo pipefail
+          release=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["releasever"])')
+          test "$release" = 44
+          sudo podman run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
+              dnf -y install python3 rpm-build redhat-rpm-config dnf5-plugins git tar xz zstd
+              git config --global --add safe.directory /workspace/build/sources/sunuefi/upstream/piano-mesa-current
+              python3 scripts/build-fedora-mesa.py --sunuefi build/sources/sunuefi --output build/mesa
+            '
+
+      - name: Package the verified runtime RPMs
+        run: |
+          set -euo pipefail
+          sudo chown -R "$(id -u):$(id -g)" build/mesa
+          tar -I 'zstd -6 -T0' -cf piano-fedora-mesa.tar.zst -C build/mesa manifest.json builder-packages.tsv rpms
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: piano-fedora-mesa
+          path: piano-fedora-mesa.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Preserve Mesa build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-diagnostics
+          path: |
+            build/mesa/rpmbuild/SPECS/mesa.spec
+            build/mesa/rpmbuild/BUILD/**/meson-logs/meson-log.txt
+          if-no-files-found: warn
+          retention-days: 14

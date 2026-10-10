@@ -108,6 +108,7 @@ jobs:
           sudo cp build/packaged/esp.img build/packaged/boot.img build/packaged/PianoUEFI-product.img bundle/
           cp build/in/image/pianoroot.f2fs.img.zst bundle/
           cp build/in/image/root-image-manifest.json build/in/image/source-runs.json build/in/image/runtime-manifest.json bundle/
+          cp build/in/image/mesa-manifest.json build/in/image/rootfs-manifest.json bundle/
           cp build/kernel/manifest.json bundle/kernel-manifest.json
           cp build/initramfs/manifest.json bundle/initramfs-manifest.json
           sudo cp build/packaged/manifest.json bundle/esp-manifest.json
