@@ -108,10 +108,10 @@ jobs:
         run: |
           set -euo pipefail
           release=$(python3 -c 'import json; print(json.load(open("product.json"))["target"]["releasever"])')
-          sudo podman run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+          sudo podman run --rm --env PIANO_RELEASE="$release" \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             "registry.fedoraproject.org/fedora:$release" bash -euo pipefail -c '
-              release=$(python3 -c '\''import json; print(json.load(open("product.json"))["target"]["releasever"])'\'')
-              dnf -y --installroot=/workspace/build/device-root/rootfs --releasever="$release" --use-host-config \
+              dnf -y --installroot=/workspace/build/device-root/rootfs --releasever="$PIANO_RELEASE" --use-host-config \
                 --setopt=install_weak_deps=False --setopt=localpkg_gpgcheck=0 install \
                 /workspace/build/runtime/rpms/*.rpm erofs-utils device-mapper python3-gobject
             '

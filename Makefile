@@ -14,6 +14,7 @@ test:
 	python3 tests/check_initramfs.py
 	python3 tests/check_rootfs_policy.py
 	python3 tests/check_stage_payload.py
+	python3 tests/check_image_workflow.py
 
 RELEASEVER ?= 44
 plan:
