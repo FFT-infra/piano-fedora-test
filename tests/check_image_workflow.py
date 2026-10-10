@@ -26,6 +26,15 @@ def module(name, path):
 
 def check_mesa(root):
     mesa = module("mesa_builder", ROOT / "scripts/build-fedora-mesa.py")
+    spec, srpm, top = root / "mesa.spec", root / "mesa.src.rpm", root / "rpmbuild"
+    with patch.object(mesa, "run") as dnf:
+        mesa.install_build_dependencies(spec, srpm, top)
+        args = tuple(map(str, dnf.call_args.args))
+        # spec 提供本机条件依赖；SRPM 继续提供冻结的动态 Rust crate 依赖。
+        assert "--spec" in args, "native spec build requirements were omitted"
+        assert args[args.index("--spec") + 1] == str(spec), args
+        assert args[args.index("--srpm") + 1] == str(srpm), args
+        assert "_topdir " + str(top) in args, args
     header = bytearray(64)
     header[:5] = b"\x7fELF\x02"
     struct.pack_into("<H", header, 18, 183)

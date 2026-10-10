@@ -34,6 +34,13 @@ def query(*command):
     return subprocess.check_output([str(x) for x in command], text=True).strip()
 
 
+def install_build_dependencies(spec, srpm, top):
+    # SRPM 头的条件依赖在其打包机上已冻结；本机重新展开 spec，
+    # 同时保留 SRPM 携带的动态 Rust BuildRequires。
+    run("dnf", "-y", "builddep", "--define", "_topdir " + str(top),
+        "--spec", spec, "--srpm", srpm)
+
+
 def adapt_spec(raw):
     if hashlib.sha256(raw).hexdigest() != SPEC_SHA256:
         raise ValueError("Fedora Mesa spec changed; review the recipe")
@@ -88,7 +95,7 @@ def build(sun, output):
     spec.write_text(effective)
     shutil.copyfile(patch, top / "SOURCES/piano-a830v1.patch")
     # 复用 Fedora 的完整依赖和打包配方，不手列 Mesa 的大量构建依赖。
-    run("dnf", "-y", "builddep", "--srpm", srpm)
+    install_build_dependencies(spec, srpm, top)
     run("rpmbuild", "-bb", "--define", "_topdir " + str(top),
         "--define", "_smp_build_ncpus 4", "--define", "_smp_mflags -j4",
         "--define", "debug_package %{nil}", spec)
