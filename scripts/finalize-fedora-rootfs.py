@@ -8,13 +8,32 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from piano_artifacts import guest_resolve, inspect_kernel, sha256
+from piano_artifacts import guest_resolve, inspect_kernel, safe_destination, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def chroot(root, *command):
     return subprocess.check_output(["chroot", str(root), *command], text=True)
+
+
+def prune_missing_manpage_links(root):
+    """nodocs 会留下 alternatives 与 man 目录两端的手册链接。"""
+    missing = []
+    for relative in ("etc/alternatives", "usr/share/man"):
+        folder = safe_destination(root, relative)
+        if not folder.is_dir():
+            continue
+        for path in folder.rglob("*"):
+            if path.is_symlink():
+                target = guest_resolve(root, "/" + path.relative_to(root).as_posix())
+                if target.is_relative_to(root / "usr/share/man") and not target.exists():
+                    missing.append(path)
+    # 先解析完整链再删除，避免删除 alternatives 后隐藏 man 端的最终目标。
+    removed = sorted(path.relative_to(root).as_posix() for path in missing)
+    for path in missing:
+        path.unlink()
+    return removed
 
 
 def main():
@@ -79,6 +98,7 @@ def main():
         dbus.unlink()
     dbus.parent.mkdir(parents=True, exist_ok=True)
     dbus.symlink_to("/etc/machine-id")
+    removed_manpages = prune_missing_manpage_links(root)
     packages = chroot(root, "rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n")
     output.mkdir(parents=True, exist_ok=True)
     (output / "packages.tsv").write_text("".join(sorted(packages.splitlines(keepends=True))))
@@ -95,7 +115,7 @@ def main():
               "packages_sha256": sha256(output / "packages.tsv"), "enabled_services": services,
               "login": "piano autologin; password locked; owner provisions credentials",
               "device_configuration_required": ["/etc/piano/boot-request.json", "active Android slot for sensors"],
-              "device_tested": False}
+              "removed_manpage_links": removed_manpages, "device_tested": False}
     (output / "manifest.json").write_text(json.dumps(result, indent=2) + "\n")
 
 
