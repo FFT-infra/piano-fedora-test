@@ -89,11 +89,19 @@ jobs:
           sudo apt-get install -y -qq build-essential clang lld llvm git zstd python3
       - name: Fetch exact boot source dependencies
         run: python3 scripts/checkout-sources.py --output build/installer-sources --mode installer
+      - name: Resolve complete UEFI run
+        id: uefi_src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/resolve-artifact-run.py --workflow build-uefi.yml --artifact uefi-product --output-key uefi_run
+
       - uses: actions/download-artifact@v4
         with:
           name: uefi-product
           path: build/in/uefi
-          run-id: 37959011346
+          run-id: ${{ steps.uefi_src.outputs.uefi_run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v4
         with:
